@@ -1,0 +1,181 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/* Swalayaku brand: a fresh-retail green. Applied to light and dark separately
+   rather than by inverting, so dark mode keeps the retail identity while
+   staying legible (see the .dark block below). */
+@theme {
+  --color-brand-50: oklch(0.97 0.04 155);
+  --color-brand-100: oklch(0.93 0.08 155);
+  --color-brand-200: oklch(0.87 0.14 155);
+  --color-brand-300: oklch(0.79 0.19 155);
+  --color-brand-400: oklch(0.69 0.19 156);
+  --color-brand-500: oklch(0.6 0.17 156);
+  --color-brand-600: oklch(0.51 0.14 156);
+  --color-brand-700: oklch(0.44 0.11 156);
+  --color-brand-800: oklch(0.37 0.09 157);
+  --color-brand-900: oklch(0.31 0.07 157);
+  --color-brand-950: oklch(0.19 0.05 157);
+
+  /* Semantic stock-status colours used across badges and alerts. */
+  --color-stock-ok: oklch(0.6 0.17 156);
+  --color-stock-low: oklch(0.77 0.16 75);
+  --color-stock-out: oklch(0.58 0.22 27);
+  --color-stock-expiring: oklch(0.65 0.19 40);
+}
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.18 0.01 160);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.18 0.01 160);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.18 0.01 160);
+  --primary: oklch(0.51 0.14 156);
+  --primary-foreground: oklch(0.99 0.01 156);
+  --secondary: oklch(0.96 0.02 156);
+  --secondary-foreground: oklch(0.31 0.07 157);
+  --muted: oklch(0.97 0.01 156);
+  --muted-foreground: oklch(0.52 0.02 160);
+  --accent: oklch(0.94 0.03 156);
+  --accent-foreground: oklch(0.31 0.07 157);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.92 0.01 160);
+  --input: oklch(0.92 0.01 160);
+  --ring: oklch(0.51 0.14 156);
+  /* Chart palette: distinct hues, all readable on white. */
+  --chart-1: oklch(0.51 0.14 156);
+  --chart-2: oklch(0.62 0.16 45);
+  --chart-3: oklch(0.58 0.17 250);
+  --chart-4: oklch(0.6 0.16 330);
+  --chart-5: oklch(0.68 0.15 95);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.99 0.005 156);
+  --sidebar-foreground: oklch(0.18 0.01 160);
+  --sidebar-primary: oklch(0.51 0.14 156);
+  --sidebar-primary-foreground: oklch(0.99 0.01 156);
+  --sidebar-accent: oklch(0.94 0.03 156);
+  --sidebar-accent-foreground: oklch(0.25 0.05 157);
+  --sidebar-border: oklch(0.92 0.01 160);
+  --sidebar-ring: oklch(0.51 0.14 156);
+}
+
+/* Dark mode keeps the green identity: the primary stays green (lightened for
+   contrast on dark surfaces) rather than turning grey, and inputs/surfaces are
+   lifted off pure black so form fields remain readable. */
+.dark {
+  --background: oklch(0.17 0.015 160);
+  --foreground: oklch(0.96 0.01 156);
+  --card: oklch(0.21 0.018 160);
+  --card-foreground: oklch(0.96 0.01 156);
+  --popover: oklch(0.22 0.018 160);
+  --popover-foreground: oklch(0.96 0.01 156);
+  --primary: oklch(0.72 0.17 156);
+  --primary-foreground: oklch(0.19 0.05 157);
+  --secondary: oklch(0.27 0.02 160);
+  --secondary-foreground: oklch(0.96 0.01 156);
+  --muted: oklch(0.27 0.02 160);
+  --muted-foreground: oklch(0.72 0.02 156);
+  --accent: oklch(0.31 0.04 158);
+  --accent-foreground: oklch(0.96 0.01 156);
+  --destructive: oklch(0.68 0.19 22);
+  --border: oklch(1 0 0 / 12%);
+  --input: oklch(1 0 0 / 16%);
+  --ring: oklch(0.72 0.17 156);
+  /* Lightened chart hues to hold contrast against dark panels. */
+  --chart-1: oklch(0.75 0.17 156);
+  --chart-2: oklch(0.75 0.15 60);
+  --chart-3: oklch(0.7 0.15 250);
+  --chart-4: oklch(0.72 0.14 330);
+  --chart-5: oklch(0.8 0.14 95);
+  --sidebar: oklch(0.2 0.018 160);
+  --sidebar-foreground: oklch(0.96 0.01 156);
+  --sidebar-primary: oklch(0.72 0.17 156);
+  --sidebar-primary-foreground: oklch(0.19 0.05 157);
+  --sidebar-accent: oklch(0.29 0.035 158);
+  --sidebar-accent-foreground: oklch(0.96 0.01 156);
+  --sidebar-border: oklch(1 0 0 / 12%);
+  --sidebar-ring: oklch(0.72 0.17 156);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+
+  /* Respect reduced-motion for the subtle transitions used across the app. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* Numbers in tables and receipts should align digit-for-digit. */
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Thermal receipt: fixed 80mm paper width with a print-only stylesheet. */
+@utility receipt-paper {
+  width: 80mm;
+  max-width: 100%;
+}

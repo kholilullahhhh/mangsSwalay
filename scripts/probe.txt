@@ -1,0 +1,7 @@
+The quick brown fox jumps over the lazy dog.
+model Product {
+  id    String @id @default(cuid())
+  sku   String @unique
+  name  String
+  price Decimal @db.Decimal(12, 2)
+}
