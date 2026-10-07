@@ -22,7 +22,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { ROLE_LABELS, type RoleName } from "@/lib/rbac";
 
-import { NAV_GROUPS, findNavItem } from "./nav-config";
+import { NAV_GROUPS, NAV_ICONS, findNavItem } from "./nav-config";
 
 export interface DashboardTopbarProps {
   user: { name: string; role: RoleName; username: string };
@@ -179,23 +179,27 @@ function QuickSearch({ onNavigate }: { onNavigate: () => void }) {
             Tidak ada hasil untuk &quot;{query.trim()}&quot;.
           </p>
         ) : (
-          results.map((entry) => (
-            <button
-              key={entry.href}
-              type="button"
-              onClick={() => {
-                router.push(entry.href);
-                onNavigate();
-              }}
-              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
-            >
-              <entry.icon
-                className="size-4 shrink-0 text-muted-foreground"
-                aria-hidden
-              />
-              <span className="truncate">{entry.title}</span>
-            </button>
-          ))
+          results.map((entry) => {
+            const Icon = NAV_ICONS[entry.icon];
+
+            return (
+              <button
+                key={entry.href}
+                type="button"
+                onClick={() => {
+                  router.push(entry.href);
+                  onNavigate();
+                }}
+                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+              >
+                <Icon
+                  className="size-4 shrink-0 text-muted-foreground"
+                  aria-hidden
+                />
+                <span className="truncate">{entry.title}</span>
+              </button>
+            );
+          })
         )}
       </div>
     </div>

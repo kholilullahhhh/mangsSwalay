@@ -76,12 +76,14 @@ export const PERMISSIONS = [
   "reports:inventory",
   "reports:purchases",
   "reports:profit",
+  "reports:cashflow",
 
   // System
   "users:view",
   "users:manage",
   "audit-log:view",
   "notifications:view",
+  "notifications:manage",
   "settings:view",
   "settings:manage",
 ] as const;
@@ -154,8 +156,10 @@ const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
     "reports:products",
     "reports:inventory",
     "reports:purchases",
-    "reports:profit",
+"reports:profit",
+    "reports:cashflow",
     "notifications:view",
+    "notifications:manage",
     "settings:view",
     "audit-log:view",
     // Note: ADMIN deliberately cannot manage users/roles or system settings.
@@ -188,8 +192,10 @@ const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
     "reports:products",
     "reports:inventory",
     "reports:purchases",
-    "reports:profit",
+"reports:profit",
+    "reports:cashflow",
     "notifications:view",
+    "notifications:manage",
   ],
 
   // A cashier can only transact. Note `sales:view-own` instead of
@@ -207,7 +213,11 @@ const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
     "shifts:view-own",
     "shifts:open",
     "shifts:close",
-    "promotions:view",
+"promotions:view",
+    // The topbar notification bell is rendered for every signed-in user, so
+    // every role needs to be able to open the target. Stock and expiry alerts
+    // are a shop-floor concern, not an office one.
+    "notifications:view",
   ],
 
   STOCK_OPERATOR: [

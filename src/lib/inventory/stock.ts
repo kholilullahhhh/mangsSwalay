@@ -1,7 +1,7 @@
 import "server-only";
 
-import { Prisma } from "@/generated/prisma/client";
 import type { StockMovementType } from "@/generated/prisma/enums";
+import type { StockClient as TxClient } from "@/lib/db-client";
 
 /**
  * Stock mutation — the single choke point for every change to `Product.stock`.
@@ -20,7 +20,9 @@ import type { StockMovementType } from "@/generated/prisma/enums";
  *    transaction.
  */
 
-export type TxClient = Prisma.TransactionClient;
+// Re-exported so callers keep importing their client type from here, next to the
+// functions that use it.
+export type { StockClient as TxClient } from "@/lib/db-client";
 
 export class InsufficientStockError extends Error {
   readonly code = "INSUFFICIENT_STOCK";

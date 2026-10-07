@@ -88,6 +88,17 @@ export function toNumber(value: unknown): number {
   return 0;
 }
 
+/**
+ * End of the given day, in server local time.
+ *
+ * Range filters use an inclusive upper bound so a user picking "today" gets all
+ * of today rather than only its first instant.
+ */
+export function endOfDay(value: Date | string): Date {
+  const date = typeof value === "string" ? new Date(value) : new Date(value);
+  date.setHours(23, 59, 59, 999);
+  return date;
+}
 /** Formats a date as `7 Okt 2026`. */
 export function formatDate(value: Date | string | null | undefined): string {
   const date = toDate(value);

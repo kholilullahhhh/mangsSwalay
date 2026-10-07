@@ -21,7 +21,7 @@ import {
 import { Store } from "lucide-react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
-import { isNavItemActive, type NavGroup } from "./nav-config";
+import { isNavItemActive, NAV_ICONS, type NavGroup } from "./nav-config";
 import { DashboardTopbar } from "./topbar";
 
 export interface DashboardShellProps {
@@ -112,6 +112,7 @@ function AppSidebar({
               <SidebarMenu>
                 {group.items.map((item) => {
                   const active = isNavItemActive(pathname, item.href);
+                  const Icon = NAV_ICONS[item.icon];
 
                   return (
                     <SidebarMenuItem key={item.href}>
@@ -128,7 +129,7 @@ function AppSidebar({
                         }}
                       >
                         <Link href={item.href}>
-                          <item.icon aria-hidden />
+                          <Icon aria-hidden />
                           <span>{item.title}</span>
                         </Link>
                       </SidebarMenuButton>

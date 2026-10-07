@@ -1,4 +1,4 @@
-﻿import "server-only";
+import "server-only";
 
 import { Prisma } from "@/generated/prisma/client";
 
@@ -144,7 +144,7 @@ export interface ProductListResult {
  *
  * Kept as a separate bounded query (capped at 500 ids) so it composes with the
  * other Prisma filters instead of duplicating them in raw SQL. In practice the
- * low-stock set is small â€” it's the products that need buying â€” so materialising
+ * low-stock set is small — it's the products that need buying — so materialising
  * the ids is cheaper than hand-rolling the whole query twice.
  */
 async function lowStockIds(limit = 500): Promise<string[]> {
@@ -344,7 +344,7 @@ export async function searchProductsForPos(
   ];
 
   // Barcodes are numeric, so an exact match is far more useful than a partial
-  // one â€” and a substring match on "899" would return hundreds of products.
+  // one — and a substring match on "899" would return hundreds of products.
   if (/^\d{6,14}$/.test(trimmed)) {
     or.push({ barcode: trimmed });
   }

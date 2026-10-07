@@ -43,13 +43,18 @@ import {
 } from "@/components/ui/dialog";
 import { formatCurrency, formatNumber } from "@/lib/format";
 import {
+  PAYMENT_METHODS as PAYMENT_METHOD_OPTIONS,
+} from "@/lib/payments/constants";
+import {
   addToCart,
   calculateTotals,
   setQuantity as setCartQuantity,
+  type AppliedPromotion,
   type CartLine,
 } from "@/lib/pos/cart";
 
 import { checkoutAction, type CheckoutResult } from "./actions";
+import { previewPromotionAction } from "./promotion-actions";
 import { PaymentDialog } from "./payment-dialog";
 import { ReceiptDialog } from "./receipt-dialog";
 
@@ -78,16 +83,29 @@ export interface PosShift {
   openingCash: number;
 }
 
-const PAYMENT_METHODS = [
-  { value: "CASH", label: "Tunai", icon: Banknote },
-  { value: "QRIS", label: "QRIS", icon: CreditCard },
-  { value: "DEBIT", label: "Debit", icon: CreditCard },
-  { value: "CREDIT_CARD", label: "Kredit", icon: CreditCard },
-  { value: "TRANSFER", label: "Transfer", icon: CreditCard },
-  { value: "E_WALLET", label: "E-Wallet", icon: CreditCard },
-] as const;
+/**
+ * Payment options with their icons.
+ *
+ * The set of methods itself comes from `lib/payments/constants` so it cannot
+ * drift from what the POS server and the reports accept; only the icon mapping is
+ * local, because a lucide component cannot cross the server/client boundary.
+ */
+const PAYMENT_ICONS: Record<PaymentMethodKey, typeof Banknote> = {
+  CASH: Banknote,
+  QRIS: CreditCard,
+  DEBIT: CreditCard,
+  CREDIT_CARD: CreditCard,
+  TRANSFER: CreditCard,
+  E_WALLET: CreditCard,
+};
 
-type PaymentMethod = (typeof PAYMENT_METHODS)[number]["value"];
+const PAYMENT_METHODS = PAYMENT_METHOD_OPTIONS.map((method) => ({
+  ...method,
+  icon: PAYMENT_ICONS[method.value],
+}));
+
+type PaymentMethodKey = (typeof PAYMENT_METHOD_OPTIONS)[number]["value"];
+type PaymentMethod = PaymentMethodKey;
 
 interface HeldCart {
   id: string;
@@ -120,14 +138,19 @@ export function PosTerminal({
   customers,
   shift,
   loyaltyRatio,
+  taxRate,
   cashierName,
+  store,
 }: {
   initialProducts: PosProduct[];
   categories: Array<{ id: string; name: string }>;
   customers: PosCustomer[];
   shift: PosShift | null;
   loyaltyRatio: number;
+  /** Store tax rate as a fraction, for the running-total preview only. */
+  taxRate: number;
   cashierName: string;
+  store: { name: string; address: string; phone: string };
 }) {
   const router = useRouter();
 
@@ -139,6 +162,9 @@ export function PosTerminal({
   const [customerQuery, setCustomerQuery] = useState("");
   const [manualDiscount, setManualDiscount] = useState(0);
   const [discountInput, setDiscountInput] = useState("");
+  const [promotion, setPromotion] = useState<AppliedPromotion | null>(null);
+  const [promotionInput, setPromotionInput] = useState("");
+  const [promotionError, setPromotionError] = useState<string | null>(null);
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [receipt, setReceipt] = useState<CheckoutResult | null>(null);
   const [heldCarts, setHeldCarts] = useState<HeldCart[]>([]);
@@ -150,14 +176,19 @@ export function PosTerminal({
   const scanRef = useRef<HTMLInputElement>(null);
 
   // ── Totals ───────────────────────────────────────────────────────────────
+  // The preview mirrors the server's own calculation, including the promotion
+  // the server granted. It is a preview only: checkout re-evaluates everything
+  // from the database, so a stale or tampered client total cannot change what the
+  // customer is charged.
   const totals = useMemo(
     () =>
       calculateTotals({
         lines,
+        promotions: promotion ? [promotion] : [],
         manualDiscount,
-        taxRate: 0,
+        taxRate,
       }),
-    [lines, manualDiscount],
+    [lines, promotion, manualDiscount, taxRate],
   );
 
   // ── Catalogue ────────────────────────────────────────────────────────────
@@ -232,8 +263,60 @@ export function PosTerminal({
     setLines([]);
     setManualDiscount(0);
     setDiscountInput("");
+    // Cleared with the cart: a promo applied to one basket must not silently
+    // carry over to the next customer's basket.
+    setPromotion(null);
+    setPromotionInput("");
+    setPromotionError(null);
     setCustomer(null);
   }, []);
+
+  // ── Promotions ───────────────────────────────────────────────────────────
+  // The client only ever learns whether a code is acceptable; the discount it
+  // previews comes back from the server's own evaluation.
+  const applyPromotion = useCallback(async () => {
+    const code = promotionInput.trim().toUpperCase();
+
+    setPromotionError(null);
+
+    if (!code) {
+      setPromotion(null);
+      return;
+    }
+
+    const preview = lines.map((line) => ({
+      productId: line.productId,
+      name: line.name,
+      categoryId:
+        initialProducts.find((product) => product.id === line.productId)
+          ?.categoryId ?? "",
+      quantity: line.quantity,
+      unitPrice: line.unitPrice,
+    }));
+
+    try {
+      const result = await previewPromotionAction({
+        code,
+        lines: preview,
+      });
+
+      if (!result.ok) {
+        setPromotion(null);
+        setPromotionError(result.error);
+        return;
+      }
+
+      setPromotion({
+        code: result.code,
+        name: result.name,
+        discountAmount: result.discount,
+      });
+      setPromotionInput("");
+    } catch {
+      setPromotion(null);
+      setPromotionError("Gagal memeriksa promo. Coba lagi.");
+    }
+  }, [promotionInput, lines, initialProducts]);
 
   // ── Barcode scanning ─────────────────────────────────────────────────────
   // A hardware scanner behaves like a keyboard: it types fast and finishes with
@@ -361,10 +444,12 @@ export function PosTerminal({
       const result = await checkoutAction({
         customerId: customer?.id,
         shiftId: shift?.id,
+        // Only the code is sent. The discount itself is decided server-side.
+        promotionCode: promotion?.code,
         paymentMethod: method,
         amountPaid,
         manualDiscount,
-        taxRate: 0,
+        taxRate,
         lines: lines.map((line) => ({
           productId: line.productId,
           quantity: line.quantity,
@@ -720,6 +805,15 @@ export function PosTerminal({
               </div>
             ) : null}
 
+            {totals.promotionDiscount > 0 ? (
+              <div className="flex justify-between text-stock-ok">
+                <dt>Promo {promotion?.code}</dt>
+                <dd className="tabular">
+                  -{formatCurrency(totals.promotionDiscount)}
+                </dd>
+              </div>
+            ) : null}
+
             {totals.manualDiscount > 0 ? (
               <div className="flex justify-between text-stock-ok">
                 <dt>Diskon manual</dt>
@@ -745,6 +839,64 @@ export function PosTerminal({
               </dd>
             </div>
           </dl>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="promotion-code">Kode promo</Label>
+
+            {promotion ? (
+              <div className="flex items-center justify-between gap-2 rounded-md border border-stock-ok/40 bg-stock-ok/5 px-2 py-1.5">
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-medium">
+                    {promotion.code} · {promotion.name}
+                  </p>
+                  <p className="text-[11px] text-stock-ok">
+                    -{formatCurrency(promotion.discountAmount)}
+                  </p>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 shrink-0 px-1 text-xs"
+                  onClick={() => setPromotion(null)}
+                >
+                  Hapus
+                </Button>
+              </div>
+            ) : (
+              <div className="flex gap-1">
+                <Input
+                  id="promotion-code"
+                  value={promotionInput}
+                  disabled={lines.length === 0}
+                  onChange={(event) => {
+                    setPromotionInput(event.target.value);
+                    setPromotionError(null);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void applyPromotion();
+                    }
+                  }}
+                  placeholder="HEMAT10"
+                  className="uppercase"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={lines.length === 0 || !promotionInput.trim()}
+                  onClick={() => void applyPromotion()}
+                >
+                  Pakai
+                </Button>
+              </div>
+            )}
+
+            {promotionError ? (
+              <p className="text-[11px] text-stock-out">{promotionError}</p>
+            ) : null}
+          </div>
 
           <div className="space-y-1.5">
             <Label htmlFor="manual-discount">Diskon manual (Rp)</Label>
@@ -960,6 +1112,7 @@ export function PosTerminal({
 
       <ReceiptDialog
         result={receipt}
+        store={store}
         onClose={() => {
           setReceipt(null);
           scanRef.current?.focus();

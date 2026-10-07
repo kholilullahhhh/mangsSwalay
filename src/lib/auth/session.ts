@@ -2,7 +2,7 @@ import "server-only";
 
 import { cache } from "react";
 import { cookies, headers } from "next/headers";
-import { redirect } from "next/navigation";
+import { forbidden, redirect } from "next/navigation";
 import { SignJWT, jwtVerify } from "jose";
 
 import { prisma } from "@/lib/db";
@@ -218,6 +218,31 @@ export async function requirePermission(
 
   if (!roleHasPermission(user.role, permission)) {
     throw new AuthorizationError(permission);
+  }
+
+  return user;
+}
+
+/**
+ * Page-level permission check.
+ *
+ * Uses Next.js `forbidden()`, which renders the app's `forbidden.tsx` and
+ * returns a real 403 status. A thrown AuthorizationError would reach the error
+ * boundary as a 500, which is wrong twice over: the status misleads monitoring,
+ * and the boundary shows a generic failure for what is a routine, expected
+ * outcome.
+ *
+ * Deliberately separate from `requirePermission`, which must *throw* so Server
+ * Actions can convert it into an inline error message. `forbidden()` aborts the
+ * render, which is right for a page and wrong for an action.
+ */
+export async function requirePagePermission(
+  permission: Permission,
+): Promise<SessionUser> {
+  const user = await requireUser();
+
+  if (!roleHasPermission(user.role, permission)) {
+    forbidden();
   }
 
   return user;

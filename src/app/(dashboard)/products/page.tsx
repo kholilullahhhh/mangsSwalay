@@ -1,8 +1,8 @@
-﻿import type { Metadata } from "next";
+import type { Metadata } from "next";
 import Link from "next/link";
 import { Package, Upload } from "lucide-react";
 
-import { requirePermission, hasPermission } from "@/lib/auth/session";
+import { requirePagePermission, hasPermission } from "@/lib/auth/session";
 import {
   listProducts,
   listBrandOptions,
@@ -46,8 +46,8 @@ export default async function ProductsPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  // Server-side authorisation â€” the real check, not just a hidden menu item.
-  await requirePermission("products:view");
+  // Server-side authorisation — the real check, not just a hidden menu item.
+  await requirePagePermission("products:view");
 
   const params = await searchParams;
 
@@ -233,7 +233,7 @@ export default async function ProductsPage({
                         <Badge variant="outline">Unggulan</Badge>
                       ) : (
                         <span className="text-xs text-muted-foreground">
-                          {product.hasExpiry ? "Berbatch" : "â€”"}
+                          {product.hasExpiry ? "Berbatch" : "—"}
                         </span>
                       )}
                     </TableCell>
@@ -291,7 +291,7 @@ query.set(key, single);
       >
         {label}
         <span aria-hidden className="text-[10px]">
-          {isSorted ? (currentDirection === "asc" ? "â†‘" : "â†“") : "â†•"}
+          {isSorted ? (currentDirection === "asc" ? "↑" : "↓") : "↕"}
         </span>
       </a>
     </TableHead>
@@ -340,3 +340,4 @@ function asBoolean(
 }
 
 export { buildProductWhere };
+

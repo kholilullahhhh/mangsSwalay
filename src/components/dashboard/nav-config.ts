@@ -2,8 +2,8 @@ import {
   BadgePercent,
   Banknote,
   BarChart3,
+  Bell,
   Boxes,
-  Building2,
   CalendarClock,
   ClipboardList,
   Coins,
@@ -31,18 +31,96 @@ import {
 } from "@/lib/rbac";
 
 /**
+ * Maps a nav item's icon name to its component.
+ *
+ * This lives in a client module because the resolved components are only ever
+ * rendered on the client. The server layout passes icon *names* across the RSC
+ * boundary; the lookup happens here, at render time.
+ */
+export const NAV_ICONS: Record<NavIconName, LucideIcon> = {
+  dashboard: LayoutDashboard,
+  pos: ScanBarcode,
+  sales: Receipt,
+  salesOwn: ShoppingCart,
+  returns: Undo2,
+  shift: Wallet,
+  product: Package,
+  category: Tags,
+  stock: Boxes,
+  opname: ClipboardList,
+  batch: CalendarClock,
+  movement: FileClock,
+  purchase: ShoppingCart,
+  supplier: Truck,
+  customer: Users,
+  loyalty: Coins,
+  promotion: BadgePercent,
+  expense: Banknote,
+  cashflow: Wallet,
+  reportSales: BarChart3,
+  reportProduct: Package,
+  reportStock: Boxes,
+  reportPurchase: Truck,
+  reportProfit: Coins,
+  users: UserCog,
+  audit: ShieldAlert,
+  notification: Bell,
+  settings: Settings,
+};
+
+/**
  * Sidebar navigation.
  *
  * Each item declares the permission it requires. `getNavGroupsForRole` filters
  * items by role so the menu matches what the user can actually do — but this is
  * presentation only. Every linked page re-checks the same permission on the
  * server via `requirePermission`, so hiding an item is never the enforcement.
+ *
+ * Icons are referenced by NAME, not by component. The nav config is built in a
+ * Server Component (the dashboard layout) and handed to the client shell; a
+ * component function cannot cross that boundary, so the client resolves the
+ * name through `NAV_ICONS` at render time.
  */
+
+/** Icon identifiers usable in nav items. */
+export const NAV_ICON_NAMES = [
+  "dashboard",
+  "pos",
+  "sales",
+  "salesOwn",
+  "returns",
+  "shift",
+  "product",
+  "category",
+  "stock",
+  "opname",
+  "batch",
+  "movement",
+  "purchase",
+  "supplier",
+  "customer",
+  "loyalty",
+  "promotion",
+  "expense",
+  "cashflow",
+  "reportSales",
+  "reportProduct",
+  "reportStock",
+  "reportPurchase",
+  "reportProfit",
+  "users",
+  "audit",
+  "notification",
+  "settings",
+] as const;
+
+export type NavIconName = (typeof NAV_ICON_NAMES)[number];
 
 export interface NavItem {
   title: string;
   href: string;
-  icon: LucideIcon;
+  /** Resolved to a component by `NAV_ICONS` inside the client shell. */
+  icon: NavIconName;
   permission: Permission;
   /** Renders a count badge from a live query. */
   badgeKey?: "unreadNotifications" | "lowStock" | "unclosedShift";
@@ -61,7 +139,7 @@ export const NAV_GROUPS: NavGroup[] = [
       {
         title: "Dashboard",
         href: "/dashboard",
-        icon: LayoutDashboard,
+        icon: "dashboard",
         permission: "dashboard:view",
         description: "Ringkasan bisnis hari ini",
       },
@@ -73,32 +151,32 @@ export const NAV_GROUPS: NavGroup[] = [
       {
         title: "POS / Kasir",
         href: "/pos",
-        icon: ScanBarcode,
+        icon: "pos",
         permission: "pos:use",
         description: "Transaksi penjualan",
       },
       {
         title: "Penjualan",
         href: "/sales",
-        icon: Receipt,
+        icon: "sales",
         permission: "sales:view",
       },
       {
         title: "Riwayat Penjualan Saya",
         href: "/sales/my",
-        icon: ShoppingCart,
+        icon: "salesOwn",
         permission: "sales:view-own",
       },
       {
         title: "Retur Penjualan",
         href: "/sales/returns",
-        icon: Undo2,
+        icon: "returns",
         permission: "sales:refund",
       },
       {
         title: "Shift Kasir",
         href: "/shifts",
-        icon: Wallet,
+        icon: "shift",
         permission: "shifts:view-own",
         badgeKey: "unclosedShift",
       },
@@ -107,170 +185,58 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: "Inventori",
     items: [
-      {
-        title: "Produk",
-        href: "/products",
-        icon: Package,
-        permission: "products:view",
-      },
-      {
-        title: "Kategori",
-        href: "/categories",
-        icon: Tags,
-        permission: "categories:view",
-      },
-      {
-        title: "Stok",
-        href: "/inventory",
-        icon: Boxes,
-        permission: "stock:view",
-        badgeKey: "lowStock",
-      },
-      {
-        title: "Stock Opname",
-        href: "/inventory/opname",
-        icon: ClipboardList,
-        permission: "stock:opname",
-      },
-      {
-        title: "Batch & Expiry",
-        href: "/inventory/batches",
-        icon: CalendarClock,
-        permission: "stock:batches",
-      },
-      {
-        title: "Pergerakan Stok",
-        href: "/inventory/movements",
-        icon: FileClock,
-        permission: "stock:view",
-      },
+      { title: "Produk", href: "/products", icon: "product", permission: "products:view" },
+      { title: "Kategori", href: "/categories", icon: "category", permission: "categories:view" },
+      { title: "Stok", href: "/inventory", icon: "stock", permission: "stock:view", badgeKey: "lowStock" },
+      { title: "Stock Opname", href: "/inventory/opname", icon: "opname", permission: "stock:opname" },
+      { title: "Batch & Expiry", href: "/inventory/batches", icon: "batch", permission: "stock:batches" },
+      { title: "Pergerakan Stok", href: "/inventory/movements", icon: "movement", permission: "stock:view" },
     ],
   },
   {
     label: "Pembelian",
     items: [
-      {
-        title: "Pembelian",
-        href: "/purchases",
-        icon: ShoppingCart,
-        permission: "purchases:view",
-      },
-      {
-        title: "Supplier",
-        href: "/suppliers",
-        icon: Truck,
-        permission: "suppliers:view",
-      },
+      { title: "Pembelian", href: "/purchases", icon: "purchase", permission: "purchases:view" },
+      { title: "Supplier", href: "/suppliers", icon: "supplier", permission: "suppliers:view" },
     ],
   },
   {
     label: "Pelanggan",
     items: [
-      {
-        title: "Pelanggan",
-        href: "/customers",
-        icon: Users,
-        permission: "customers:view",
-      },
-      {
-        title: "Member & Loyalty",
-        href: "/customers/loyalty",
-        icon: Coins,
-        permission: "customers:view",
-      },
+      { title: "Pelanggan", href: "/customers", icon: "customer", permission: "customers:view" },
+      { title: "Member & Loyalty", href: "/customers/loyalty", icon: "loyalty", permission: "customers:view" },
     ],
   },
   {
     label: "Pemasaran",
     items: [
-      {
-        title: "Promo",
-        href: "/promotions",
-        icon: BadgePercent,
-        permission: "promotions:view",
-      },
+      { title: "Promo", href: "/promotions", icon: "promotion", permission: "promotions:view" },
     ],
   },
   {
     label: "Keuangan",
     items: [
-      {
-        title: "Pengeluaran",
-        href: "/expenses",
-        icon: Banknote,
-        permission: "expenses:view",
-      },
-      {
-        title: "Arus Kas",
-        href: "/cashflow",
-        icon: Wallet,
-        permission: "reports:sales",
-      },
+      { title: "Pengeluaran", href: "/expenses", icon: "expense", permission: "expenses:view" },
+      { title: "Arus Kas", href: "/cashflow", icon: "cashflow", permission: "reports:sales" },
     ],
   },
   {
     label: "Laporan",
     items: [
-      {
-        title: "Laporan Penjualan",
-        href: "/reports/sales",
-        icon: BarChart3,
-        permission: "reports:sales",
-      },
-      {
-        title: "Laporan Produk",
-        href: "/reports/products",
-        icon: Package,
-        permission: "reports:products",
-      },
-      {
-        title: "Laporan Stok",
-        href: "/reports/inventory",
-        icon: Boxes,
-        permission: "reports:inventory",
-      },
-      {
-        title: "Laporan Pembelian",
-        href: "/reports/purchases",
-        icon: Truck,
-        permission: "reports:purchases",
-      },
-      {
-        title: "Laporan Profit",
-        href: "/reports/profit",
-        icon: Coins,
-        permission: "reports:profit",
-      },
+      { title: "Laporan Penjualan", href: "/reports/sales", icon: "reportSales", permission: "reports:sales" },
+      { title: "Laporan Produk", href: "/reports/products", icon: "reportProduct", permission: "reports:products" },
+      { title: "Laporan Stok", href: "/reports/inventory", icon: "reportStock", permission: "reports:inventory" },
+      { title: "Laporan Pembelian", href: "/reports/purchases", icon: "reportPurchase", permission: "reports:purchases" },
+      { title: "Laporan Profit", href: "/reports/profit", icon: "reportProfit", permission: "reports:profit" },
     ],
   },
   {
     label: "Sistem",
     items: [
-      {
-        title: "Pengguna",
-        href: "/users",
-        icon: UserCog,
-        permission: "users:view",
-      },
-      {
-        title: "Audit Log",
-        href: "/audit-log",
-        icon: ShieldAlert,
-        permission: "audit-log:view",
-      },
-      {
-        title: "Notifikasi",
-        href: "/notifications",
-        icon: Building2,
-        permission: "notifications:view",
-        badgeKey: "unreadNotifications",
-      },
-      {
-        title: "Pengaturan",
-        href: "/settings",
-        icon: Settings,
-        permission: "settings:view",
-      },
+      { title: "Pengguna", href: "/users", icon: "users", permission: "users:view" },
+      { title: "Audit Log", href: "/audit-log", icon: "audit", permission: "audit-log:view" },
+      { title: "Notifikasi", href: "/notifications", icon: "notification", permission: "notifications:view", badgeKey: "unreadNotifications" },
+      { title: "Pengaturan", href: "/settings", icon: "settings", permission: "settings:view" },
     ],
   },
 ];

@@ -15,7 +15,7 @@ import {
   Warehouse,
 } from "lucide-react";
 
-import { requirePermission } from "@/lib/auth/session";
+import { requirePagePermission } from "@/lib/auth/session";
 import { hasPermission } from "@/lib/auth/session";
 import {
   getExpiringBatches,
@@ -91,7 +91,7 @@ const SALE_STATUS_VARIANTS = {
 export default async function DashboardPage() {
   // Server-side authorisation. The sidebar already hides what this role cannot
   // reach, but this check is what actually protects the data.
-  await requirePermission("dashboard:view");
+  await requirePagePermission("dashboard:view");
 
   const [
     summary,
@@ -308,7 +308,7 @@ export default async function DashboardPage() {
                         {product.name}
                       </Link>
                       <p className="truncate text-xs text-muted-foreground">
-                        {product.sku} · {formatNumber(product.quantity)} terjual
+                        {product.sku} Â· {formatNumber(product.quantity)} terjual
                       </p>
                     </div>
                     <span className="tabular shrink-0 text-sm font-medium">
@@ -363,7 +363,7 @@ export default async function DashboardPage() {
                           {sale.invoiceNumber}
                         </Link>
                         <p className="text-xs text-muted-foreground">
-                          {formatTime(sale.date)} ·{" "}
+                          {formatTime(sale.date)} Â·{" "}
                           {PAYMENT_LABELS[sale.paymentMethod] ??
                             sale.paymentMethod}
                         </p>

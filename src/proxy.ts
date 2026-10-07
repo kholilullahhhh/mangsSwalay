@@ -21,7 +21,6 @@ const PUBLIC_PREFIXES = [
   "/api/auth",
   "/_next",
   "/favicon.ico",
-  "/products", // public catalogue pages (landing page links here)
 ];
 
 function hasSessionCookie(request: NextRequest): boolean {

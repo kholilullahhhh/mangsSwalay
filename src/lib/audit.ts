@@ -2,7 +2,7 @@ import "server-only";
 
 import { headers } from "next/headers";
 import { prisma } from "@/lib/db";
-import type { TxClient } from "@/lib/inventory/stock";
+import type { AuditClient } from "@/lib/db-client";
 
 /**
  * Audit logging.
@@ -62,7 +62,8 @@ export type AuditAction =
   | "USER_CREATE"
   | "USER_UPDATE"
   | "USER_DELETE"
-  | "SETTINGS_UPDATE";
+  | "SETTINGS_UPDATE"
+  | "NOTIFICATION_DELETE";
 
 export interface AuditInput {
   userId: string | null;
@@ -145,7 +146,7 @@ export async function audit(input: AuditInput): Promise<void> {
  * `$transaction` callbacks where atomicity matters.
  */
 export async function auditWithClient(
-  client: TxClient,
+  client: AuditClient,
   input: AuditInput,
   req?: { ipAddress: string | null; userAgent: string | null },
 ): Promise<void> {

@@ -360,6 +360,9 @@ model StockOpnameItem {
   physicalStock Int?
   difference    Int?
   valueDiff     Decimal? @db.Decimal(15, 2)
+  // Cost captured when the session opened, so valuing the variance later does
+  // not depend on a price that may have changed mid-count.
+  purchasePriceSnapshot Decimal? @db.Decimal(15, 2)
   note          String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -459,6 +462,8 @@ model Sale {
   change        Decimal        @db.Decimal(15, 2) @default(0)
   status        SaleStatus     @default(COMPLETED)
   pointsEarned  Int            @default(0)
+  // Code of the promotion applied at checkout, for reporting and usage limits.
+  promotionCode String?
   notes         String?
   voidedAt      DateTime?
   voidReason    String?
@@ -477,6 +482,7 @@ model Sale {
   @@index([userId])
   @@index([status])
   @@index([paymentMethod])
+  @@index([promotionCode])
 }
 
 model SaleItem {

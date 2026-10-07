@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { Printer } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -12,31 +12,31 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { formatCurrency, formatDateTime } from "@/lib/format";
+import { paymentMethodLabel } from "@/lib/payments/constants";
 
 import type { CheckoutResult } from "./actions";
 
 /**
  * Post-checkout receipt.
  *
- * Formatted for an 80mm thermal printer: monospace, narrow, and marked up so a
- * print stylesheet can hide the dialog chrome and print only the receipt body.
+ * Formatted for an 80mm thermal printer: monospace, narrow, and marked up so the
+ * print stylesheet can print only the receipt body.
  *
- * Printable receipt rendering lives in `printable.tsx`, which renders from the
- * same data so the on-screen preview and the printed output cannot drift.
+ * Everything printed comes from `result`, which the server computed inside the
+ * checkout transaction. The store header comes from settings passed by the page.
+ * Nothing here is recomputed from the client's cart: the receipt is the customer's
+ * record of what they were charged, so it must match the Sale row exactly rather
+ * than a second guess at it.
  */
 export function ReceiptDialog({
   result,
+  store,
   onClose,
 }: {
   result: CheckoutResult | null;
+  store: { name: string; address: string; phone: string };
   onClose: () => void;
 }) {
-  const [storeName] = useState("Swalayaku");
-  const [storeAddress] = useState(
-    "Jl. Raya Swalaya No. 123, Jakarta Barat, DKI Jakarta 11530",
-  );
-  const [storePhone] = useState("(021) 555-0123");
-
   useEffect(() => {
     if (!result) return;
     document.title = `Struk ${result.invoiceNumber}`;
@@ -49,11 +49,13 @@ export function ReceiptDialog({
     window.print();
   }
 
+  const paymentLabel = paymentMethodLabel(result?.paymentMethod);
+
   return (
     <Dialog open={Boolean(result)} onOpenChange={(open) => !open && onClose()}>
       <DialogContent
         className="sm:max-w-sm print:border-0 print:shadow-none"
-        // Let the browser print only the receipt body via the print stylesheet.
+        // Lets the print stylesheet target the receipt body specifically.
         data-receipt-root
       >
         {result ? (
@@ -68,41 +70,104 @@ export function ReceiptDialog({
             <div className="receipt-paper mx-auto border rounded-md p-4 font-mono text-[11px] leading-relaxed print:border-0 print:p-0">
               <div className="text-center">
                 <p className="text-sm font-bold uppercase tracking-wide">
-                  {storeName}
+                  {store.name}
                 </p>
-                <p>{storeAddress}</p>
-                <p>Telp. {storePhone}</p>
+                {store.address ? <p>{store.address}</p> : null}
+                {store.phone ? <p>Telp. {store.phone}</p> : null}
               </div>
 
               <div className="my-2 border-t border-dashed" />
 
-              <div className="flex justify-between">
+              <div className="flex justify-between gap-2">
                 <span>Invoice</span>
                 <span>{result.invoiceNumber}</span>
               </div>
-              <div className="flex justify-between">
+              <div className="flex justify-between gap-2">
                 <span>Tanggal</span>
-                <span>{formatDateTime(new Date())}</span>
+                <span>{formatDateTime(new Date(result.date))}</span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span>Kasir</span>
+                <span>{result.cashierName}</span>
+              </div>
+              {result.customerName ? (
+                <div className="flex justify-between gap-2">
+                  <span>Pelanggan</span>
+                  <span className="truncate">{result.customerName}</span>
+                </div>
+              ) : null}
+
+              <div className="my-2 border-t border-dashed" />
+
+              {/* Itemised lines: a receipt without them cannot be checked
+                  against the goods the customer is carrying. */}
+              <ul className="space-y-1">
+                {result.lines.map((line, index) => (
+                  <li key={index}>
+                    <div className="flex justify-between gap-2">
+                      <span className="flex-1">{line.name}</span>
+                      <span className="tabular">
+                        {formatCurrency(line.subtotal)}
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between gap-2 text-[10px] text-muted-foreground">
+                      <span>
+                        {line.quantity} {line.unit} x{" "}
+                        {formatCurrency(line.unitPrice)}
+                      </span>
+                      {line.discount > 0 ? (
+                        <span>-{formatCurrency(line.discount)}</span>
+                      ) : null}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+
+              <div className="my-2 border-t border-dashed" />
+
+              <div className="flex justify-between gap-2">
+                <span>Subtotal</span>
+                <span className="tabular">{formatCurrency(result.subtotal)}</span>
+              </div>
+
+              {result.discount > 0 ? (
+                <div className="flex justify-between gap-2">
+                  <span>
+                    Diskon{result.promotionCode ? ` (${result.promotionCode})` : ""}
+                  </span>
+                  <span className="tabular">-{formatCurrency(result.discount)}</span>
+                </div>
+              ) : null}
+
+              {result.tax > 0 ? (
+                <div className="flex justify-between gap-2">
+                  <span>Pajak</span>
+                  <span className="tabular">{formatCurrency(result.tax)}</span>
+                </div>
+              ) : null}
+
+              <div className="mt-1 flex justify-between gap-2 text-sm font-bold">
+                <span>TOTAL</span>
+                <span className="tabular">{formatCurrency(result.total)}</span>
               </div>
 
               <div className="my-2 border-t border-dashed" />
 
-              <div className="flex justify-between">
-                <span>Total</span>
-                <span>{formatCurrency(result.total)}</span>
-              </div>
-              <div className="flex justify-between">
+              <div className="flex justify-between gap-2">
                 <span>Metode</span>
-                <span>TUNAI</span>
+                <span>{paymentLabel}</span>
               </div>
-              <div className="flex justify-between">
+              <div className="flex justify-between gap-2">
                 <span>Bayar</span>
-                <span>{formatCurrency(result.total + result.change)}</span>
+                <span className="tabular">{formatCurrency(result.amountPaid)}</span>
               </div>
-              <div className="flex justify-between font-bold">
-                <span>Kembali</span>
-                <span>{formatCurrency(result.change)}</span>
-              </div>
+              {result.change > 0 ? (
+                <div className="flex justify-between gap-2 font-bold">
+                  <span>Kembali</span>
+                  <span className="tabular">{formatCurrency(result.change)}</span>
+                </div>
+              ) : null}
 
               {result.pointsEarned > 0 ? (
                 <>
@@ -116,7 +181,7 @@ export function ReceiptDialog({
               <p className="text-center">
                 Terima kasih telah berbelanja
                 <br />
-                di {storeName}
+                di {store.name}
               </p>
             </div>
 

@@ -4,6 +4,13 @@ import { z } from "zod";
 
 import { prisma } from "@/lib/db";
 import { ValidationError } from "@/lib/error";
+import type { TxClient } from "@/lib/db-client";
+
+/** Model delegates product creation needs; the global client and a transaction both fit. */
+export type ProductClient = Pick<
+  TxClient,
+  "product" | "inventoryMovement" | "category"
+>;
 
 /**
  * Product mutations.
@@ -27,6 +34,24 @@ const barcodeSchema = trimmed
   .optional()
   .or(trimmed.length(0).transform(() => undefined))
   .or(z.literal("").transform(() => undefined));
+
+/**
+ * An optional number that may arrive from a form as an empty string.
+ *
+ * `z.coerce.number().optional()` looks like it handles "field left blank", but it
+ * does not: coercion runs first and turns `""` into `0`, so the `.optional()`
+ * never sees a missing value. That made `maxStock` come through as `0`, which
+ * then failed the "maximum must exceed minimum" rule for every product with a
+ * non-zero minimum stock — a form the user had filled in correctly was rejected.
+ *
+ * Mapping the empty string to `undefined` before coercion is what actually makes
+ * the field optional.
+ */
+const optionalNumber = z.preprocess(
+  (value) =>
+    typeof value === "string" && value.trim() === "" ? undefined : value,
+  z.coerce.number({ error: "Nilai harus berupa angka." }).min(0, "Nilai tidak boleh negatif.").optional(),
+);
 
 export const productSchema = z
   .object({
@@ -53,11 +78,7 @@ export const productSchema = z
       .number({ error: "Harga jual harus berupa angka." })
       .min(0, "Harga jual tidak boleh negatif.")
       .max(1_000_000_000, "Harga jual terlalu besar."),
-    minSellingPrice: z.coerce
-      .number()
-      .min(0, "Harga minimum tidak boleh negatif.")
-      .optional()
-      .or(z.literal("").transform(() => undefined)),
+    minSellingPrice: optionalNumber,
     stock: z.coerce
       .number({ error: "Stok harus berupa angka." })
       .int("Stok harus bilangan bulat.")
@@ -67,12 +88,10 @@ export const productSchema = z
       .int("Stok minimum harus bilangan bulat.")
       .min(0, "Stok minimum tidak boleh negatif.")
       .default(0),
-    maxStock: z.coerce
-      .number()
-      .int("Stok maksimum harus bilangan bulat.")
-      .min(0)
-      .optional()
-      .or(z.literal("").transform(() => undefined)),
+    maxStock: optionalNumber.refine(
+      (value) => value === undefined || Number.isInteger(value),
+      "Stok maksimum harus bilangan bulat.",
+    ),
     hasExpiry: z.coerce.boolean().default(false),
     isFeatured: z.coerce.boolean().default(false),
     isActive: z.coerce.boolean().default(true),
@@ -130,6 +149,7 @@ function slugify(input: string): string {
 async function uniqueSlug(
   base: string,
   excludeId?: string,
+  client: ProductClient = prisma,
 ): Promise<string> {
   const root = slugify(base) || "produk";
 
@@ -139,7 +159,7 @@ async function uniqueSlug(
   // Bounded loop: the catalogue cannot realistically hold 50 colliding slugs,
   // and the cap prevents an infinite loop if it somehow did.
   while (suffix < 50) {
-    const existing = await prisma.product.findUnique({
+    const existing = await client.product.findUnique({
       where: { slug: candidate },
       select: { id: true },
     });
@@ -165,14 +185,15 @@ async function uniqueSlug(
 async function assertUnique(
   data: { sku: string; barcode?: string },
   excludeId?: string,
+  client: ProductClient = prisma,
 ): Promise<void> {
   const [skuConflict, barcodeConflict] = await Promise.all([
-    prisma.product.findUnique({
+    client.product.findUnique({
       where: { sku: data.sku },
       select: { id: true, name: true },
     }),
     data.barcode
-      ? prisma.product.findUnique({
+      ? client.product.findUnique({
           where: { barcode: data.barcode },
           select: { id: true, name: true },
         })
@@ -197,11 +218,26 @@ async function assertUnique(
 export async function createProduct(
   data: ProductData,
 ): Promise<{ id: string; slug: string }> {
-  await assertUnique(data);
+  return createProductWithClient(prisma, data);
+}
 
-  const slug = await uniqueSlug(data.name);
+/**
+ * Product creation against an explicit client.
+ *
+ * Exists so the CSV importer can create every row inside one transaction: a
+ * bulk import that leaves 40 of 50 products behind after failing on row 41 is
+ * worse than one that imports nothing, because the store has to work out which
+ * half arrived. The single-product path just passes the default client.
+ */
+export async function createProductWithClient(
+  client: ProductClient,
+  data: ProductData,
+): Promise<{ id: string; slug: string }> {
+  await assertUnique(data, undefined, client);
 
-  const product = await prisma.product.create({
+  const slug = await uniqueSlug(data.name, undefined, client);
+
+  const product = await client.product.create({
     data: {
       sku: data.sku,
       barcode: data.barcode ?? null,
@@ -229,7 +265,7 @@ export async function createProduct(
   // history explains where that stock came from rather than starting at a
   // mystery non-zero number.
   if (data.stock > 0) {
-    await prisma.inventoryMovement.create({
+    await client.inventoryMovement.create({
       data: {
         productId: product.id,
         type: "ADJUSTMENT_IN",

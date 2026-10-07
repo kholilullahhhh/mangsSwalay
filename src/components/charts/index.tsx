@@ -80,7 +80,8 @@ const TOOLTIP_PROPS = {
 export interface SalesTrendPoint {
   label: string;
   total: number;
-  transactions: number;
+  /** Optional: shown in the tooltip when available. */
+  transactions?: number;
 }
 
 /** Area chart of daily revenue. */
@@ -310,6 +311,71 @@ export function PurchaseVsSaleChart({
         />
         <Bar
           dataKey="purchase"
+          fill="var(--chart-2)"
+          radius={[4, 4, 0, 0]}
+          maxBarSize={18}
+        />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+export interface CashFlowPoint {
+  label: string;
+  inflow: number;
+  outflow: number;
+}
+
+/**
+ * Cash in against cash out, grouped bars.
+ *
+ * Outflow is shown as the full negative magnitude: bar length is what the reader
+ * compares, and a mirrored axis would make a net-positive day look identical to
+ * a net-negative one.
+ */
+export function CashFlowChart({
+  data,
+  height = 280,
+}: {
+  data: CashFlowPoint[];
+  height?: number;
+}) {
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+        <CartesianGrid {...GRID_PROPS} />
+        <XAxis dataKey="label" {...AXIS_PROPS} />
+        <YAxis
+          {...AXIS_PROPS}
+          width={56}
+          tickFormatter={(value: number) => formatCurrencyCompact(value)}
+        />
+        <Tooltip
+          {...TOOLTIP_PROPS}
+          formatter={(value: TooltipValue, name: TooltipValue) => [
+            `Rp ${formatNumber(tooltipNumber(value))}`,
+            name === "inflow" ? "Kas Masuk" : "Keluar",
+          ]}
+        />
+        <Legend
+          verticalAlign="bottom"
+          height={28}
+          iconType="circle"
+          iconSize={8}
+          formatter={(value: string) => (
+            <span className="text-xs text-muted-foreground">
+              {value === "inflow" ? "Kas Masuk" : "Keluar"}
+            </span>
+          )}
+        />
+        <Bar
+          dataKey="inflow"
+          fill="var(--chart-1)"
+          radius={[4, 4, 0, 0]}
+          maxBarSize={18}
+        />
+        <Bar
+          dataKey="outflow"
           fill="var(--chart-2)"
           radius={[4, 4, 0, 0]}
           maxBarSize={18}
