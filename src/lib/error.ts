@@ -74,11 +74,20 @@ export function toErrorResponse(error: unknown): {
     return { status: 422, body: { error: error.message } };
   }
 
+  // Domain errors from the state machines and the stock layer carry the same
+  // actionable Indonesian copy the user should see. Falling through to the
+  // generic handler turned "already received" and "not enough stock" — the two
+  // most common refusals in the app — into "server error", which both misleads
+  // the operator and teaches them to retry the thing that must not be retried.
+  if (hasDomainCode(error)) {
+    return { status: 422, body: { error: error.message } };
+  }
+
   // Prisma unique-constraint violations are common on duplicate SKU/barcode.
   if (isPrismaUniqueViolation(error)) {
     return {
       status: 409,
-      body: { error: "Data duplikat: SKU atau barcode sudah digunakan." },
+      body: { error: uniqueViolationMessage(error) },
     };
   }
 
@@ -104,6 +113,64 @@ function isPrismaUniqueViolation(error: unknown): boolean {
     "code" in error &&
     (error as { code?: unknown }).code === "P2002"
   );
+}
+
+/**
+ * Domain errors that are not subclasses of the base classes above, matched on the
+ * `code` they carry. Importing each module would create a cycle: those modules
+ * import `BusinessRuleError` from here.
+ */
+const DOMAIN_ERROR_CODES = new Set([
+  "PURCHASE_TRANSITION",
+  "INSUFFICIENT_STOCK",
+  "UNKNOWN_PRODUCT",
+]);
+
+function hasDomainCode(error: unknown): error is { code: string; message: string } {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    DOMAIN_ERROR_CODES.has(String((error as { code?: unknown }).code))
+  );
+}
+
+/**
+ * Names the field that actually collided.
+ *
+ * `P2002` is raised for every unique constraint in the schema, and telling an
+ * operator who duplicated a supplier code to fix a product's SKU sends them to
+ * entirely the wrong place.
+ */
+function uniqueViolationMessage(error: unknown): string {
+  const target =
+    typeof error === "object" && error !== null && "meta" in error
+      ? (error as { meta?: { target?: unknown } }).meta?.target
+      : undefined;
+
+  const fields = Array.isArray(target)
+    ? target.join(", ")
+    : typeof target === "string"
+      ? target
+      : "";
+
+  if (fields.includes("sku") || fields.includes("barcode")) {
+    return "Data duplikat: SKU atau barcode sudah digunakan.";
+  }
+
+  if (fields.includes("email")) return "Email sudah digunakan pengguna lain.";
+  if (fields.includes("username")) return "Username sudah digunakan.";
+  if (fields.includes("code")) return "Kode sudah digunakan. Gunakan kode lain.";
+  if (fields.includes("slug")) return "Slug sudah digunakan produk/kategori lain.";
+  if (fields.includes("name")) return "Nama sudah digunakan.";
+  if (fields.includes("number") || fields.includes("invoiceNumber")) {
+    return "Nomor dokumen sudah ada. Coba lagi.";
+  }
+  if (fields.includes("dedupeKey")) {
+    return "Notifikasi ini sudah ada.";
+  }
+
+  return "Data duplikat: nilai ini sudah digunakan.";
 }
 
 function isPrismaNotFoundViolation(error: unknown): boolean {

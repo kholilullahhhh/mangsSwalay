@@ -139,7 +139,7 @@ function AppSidebar({
                       ) : null}
 
                       {item.badgeKey === "unclosedShift" && hasOpenShift ? (
-                        <SidebarMenuBadge className="bg-stock-low text-white">
+                        <SidebarMenuBadge className="bg-stock-low text-black">
                           Aktif
                         </SidebarMenuBadge>
                       ) : null}

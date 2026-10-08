@@ -68,6 +68,14 @@ export async function createSession(userId: string): Promise<void> {
 
   const expiresAt = new Date(Date.now() + SESSION_TTL_SECONDS * 1000);
 
+  // Sweep expired rows before adding another. Sessions are only ever removed by
+  // the user who held them coming back with the cookie, so a shared till would
+  // accumulate every session ever opened, forever. Deleting on the write path
+  // keeps that self-healing with no cron job to deploy on Vercel.
+  await prisma.session.deleteMany({
+    where: { expiresAt: { lt: new Date() } },
+  });
+
   await prisma.session.create({
     data: {
       token: tokenHash,

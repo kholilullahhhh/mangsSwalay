@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useTheme } from "next-themes";
-import { Bell, LogOut, Moon, Search, Sun } from "lucide-react";
+import { Bell, LogOut, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,9 +19,10 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { SidebarTrigger } from "@/components/ui/sidebar";
-import { ROLE_LABELS, type RoleName } from "@/lib/rbac";
+import { ROLE_LABELS, roleHasPermission, type RoleName } from "@/lib/rbac";
 
-import { NAV_GROUPS, NAV_ICONS, findNavItem } from "./nav-config";
+import { getNavGroupsForRole, NAV_ICONS, findNavItem } from "./nav-config";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 export interface DashboardTopbarProps {
   user: { name: string; role: RoleName; username: string };
@@ -30,23 +30,41 @@ export interface DashboardTopbarProps {
   openShift: { number: string; openedAt: Date } | null;
 }
 
-const ALL_SEARCHABLE = NAV_GROUPS.flatMap((group) => group.items).filter(
-  (item) => item.href !== "/dashboard",
-);
+/**
+ * Search index built from the role's own navigation.
+ *
+ * Using the full list meant a cashier searching for the audit log was offered
+ * `/audit-log` and `/settings`, which their role cannot open — so the search led
+ * straight to a 403. The server enforces it either way; this just stops offering
+ * the destination.
+ */
+function searchableFor(role: RoleName) {
+  return getNavGroupsForRole(role)
+    .flatMap((group) => group.items)
+    .filter((item) => item.href !== "/dashboard");
+}
 
 /** Cmd/Ctrl+K opens the menu search, matching common admin-tool muscle memory. */
 function useCommandK(onOpen: () => void) {
+  // Held in a ref so the listener is attached once rather than torn down and
+  // re-added on every render of the topbar — the most-mounted component here.
+  const handler = useRef(onOpen);
+
+  useEffect(() => {
+    handler.current = onOpen;
+  }, [onOpen]);
+
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        onOpen();
+        handler.current();
       }
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onOpen]);
+  }, []);
 }
 
 export function DashboardTopbar({
@@ -61,13 +79,19 @@ export function DashboardTopbar({
   useCommandK(() => setSearchOpen(true));
 
   return (
-    <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-2 border-b bg-background/95 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 md:px-5">
+    <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-1.5 border-b bg-background/95 px-2 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:gap-2 sm:px-3 md:px-5">
       <SidebarTrigger className="-ml-1" />
 
       <div className="min-w-0 flex-1">
-        <h1 className="truncate text-sm font-semibold tracking-tight md:text-base">
+        {/* Not an <h1>: every page renders its own and the shell renders inside
+            the layout, so an <h1> here gave each dashboard page two of them.
+            A screen reader announces a document by its first heading. */}
+        <p
+          aria-hidden
+          className="truncate text-sm font-semibold tracking-tight md:text-base"
+        >
           {activeItem?.title ?? "Dashboard"}
-        </h1>
+        </p>
         {openShift ? (
           <p className="hidden text-xs text-muted-foreground sm:block">
             Shift terbuka: {openShift.number}
@@ -139,7 +163,10 @@ export function DashboardTopbar({
           align="end"
           sideOffset={8}
         >
-          <QuickSearch onNavigate={() => setSearchOpen(false)} />
+          <QuickSearch
+            role={user.role}
+            onNavigate={() => setSearchOpen(false)}
+          />
         </PopoverContent>
       </Popover>
     </header>
@@ -150,16 +177,24 @@ export function DashboardTopbar({
  * Menu search. Filters navigation entries client side and routes to a page,
  * where real search happens with server-side database filtering.
  */
-function QuickSearch({ onNavigate }: { onNavigate: () => void }) {
+function QuickSearch({
+  role,
+  onNavigate,
+}: {
+  role: RoleName;
+  onNavigate: () => void;
+}) {
   const [query, setQuery] = useState("");
   const router = useRouter();
 
   const trimmed = query.trim().toLowerCase();
+  const searchable = searchableFor(role);
+
   const results = trimmed
-    ? ALL_SEARCHABLE.filter((entry) =>
-        entry.title.toLowerCase().includes(trimmed),
-      ).slice(0, 8)
-    : ALL_SEARCHABLE.slice(0, 8);
+    ? searchable
+        .filter((entry) => entry.title.toLowerCase().includes(trimmed))
+        .slice(0, 8)
+    : searchable.slice(0, 8);
 
   return (
     <div className="flex flex-col">
@@ -169,7 +204,7 @@ function QuickSearch({ onNavigate }: { onNavigate: () => void }) {
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Cari halaman atau fitur…"
-          className="border-0 focus-visible:ring-0"
+          className="border-0 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         />
       </div>
 
@@ -203,51 +238,6 @@ function QuickSearch({ onNavigate }: { onNavigate: () => void }) {
         )}
       </div>
     </div>
-  );
-}
-
-/**
- * Theme toggle.
- *
- * Both icons are always rendered and swapped with CSS (`dark:` variants), so the
- * correct one is visible on the very first paint. Reading `resolvedTheme` into
- * state would instead require a mount-then-correct render, which causes a
- * hydration mismatch or a cascading re-render — hence the CSS approach.
- */
-function ThemeToggle() {
-  const { setTheme } = useTheme();
-
-  function toggleTheme() {
-    // next-themes reads the current value from the DOM class it owns, so this
-    // flips the active theme without needing it in React state.
-    const isDark =
-      typeof document !== "undefined" &&
-      document.documentElement.classList.contains("dark");
-
-    setTheme(isDark ? "light" : "dark");
-  }
-
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={toggleTheme}
-          aria-label="Ganti tema terang dan gelap"
-        >
-          <Sun
-            className="hidden size-4 dark:block"
-            aria-hidden
-          />
-          <Moon
-            className="size-4 dark:hidden"
-            aria-hidden
-          />
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>Ganti tema</TooltipContent>
-    </Tooltip>
   );
 }
 
@@ -304,9 +294,13 @@ function UserMenu({
           <Link href="/dashboard">Dashboard</Link>
         </DropdownMenuItem>
 
-        <DropdownMenuItem asChild>
-          <Link href="/settings">Pengaturan</Link>
-        </DropdownMenuItem>
+        {/* Gated on the same permission the page enforces, so the menu never offers a
+            destination that answers 403 for this role. */}
+        {roleHasPermission(role, "settings:view") ? (
+          <DropdownMenuItem asChild>
+            <Link href="/settings">Pengaturan</Link>
+          </DropdownMenuItem>
+        ) : null}
 
         <Separator />
 

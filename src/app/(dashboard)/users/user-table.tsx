@@ -40,7 +40,7 @@ import {
   deactivateUserAction,
   updateUserAction,
   type CrudResult,
-} from "@/app/(dashboard)/admin/actions";
+} from "@/actions/admin-actions";
 import { CheckboxField, Field, FormError } from "@/components/admin/fields";
 
 /**

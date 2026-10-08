@@ -1,16 +1,19 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 
 import { requirePermission } from "@/lib/auth/session";
 import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
 import { toActionError } from "@/lib/error";
+import { generateStockNotifications } from "@/lib/notifications/generate";
 import {
   createPurchase,
   createSupplier,
   deactivateSupplier,
   deleteDraftPurchase,
+  purchaseLineSchema,
   recordPurchasePayment,
   transitionPurchase,
   updateSupplier,
@@ -58,20 +61,49 @@ export async function createPurchaseAction(
 
   const rawLines = formData.getAll("line");
 
-  const lines: PurchaseLineInput[] = rawLines
-    .map((entry) => {
-      if (typeof entry !== "string") return null;
-      try {
-        const parsed = JSON.parse(entry) as PurchaseLineInput;
-        return parsed;
-      } catch {
-        return null;
-      }
-    })
-    .filter((line): line is PurchaseLineInput => line !== null);
+  // Validated rather than cast: the JSON blob is whatever the browser posted, so
+  // a missing product id or a non-numeric price has to be rejected here. Passing
+  // it straight through reached Prisma as `NaN` and surfaced as a 500 instead of
+  // a message naming the offending line.
+  const lines: PurchaseLineInput[] = [];
+  let lineError: string | null = null;
+
+  for (const entry of rawLines) {
+    if (typeof entry !== "string") continue;
+
+    let json: unknown;
+
+    try {
+      json = JSON.parse(entry);
+    } catch {
+      lineError = "Format data barang tidak valid.";
+      break;
+    }
+
+    const result = purchaseLineSchema.safeParse(json);
+
+    if (!result.success) {
+      lineError = result.error.issues[0]?.message ?? "Data barang tidak valid.";
+      break;
+    }
+
+    const parsed = result.data;
+
+    lines.push({
+      productId: parsed.productId,
+      quantity: parsed.quantity,
+      purchasePrice: parsed.purchasePrice,
+      expiryDate: parsed.expiryDate ?? null,
+      batchNumber: parsed.batchNumber ?? null,
+    });
+  }
 
   const supplierId = String(formData.get("supplierId") ?? "");
   const dateRaw = String(formData.get("date") ?? "");
+
+  if (lineError) {
+    return { fieldErrors: { lines: lineError } };
+  }
 
   if (!supplierId) {
     return { fieldErrors: { supplierId: "Pilih supplier." } };
@@ -95,7 +127,6 @@ export async function createPurchaseAction(
         discount: Number(formData.get("discount") ?? 0) || 0,
         tax: Number(formData.get("tax") ?? 0) || 0,
         shippingCost: Number(formData.get("shippingCost") ?? 0) || 0,
-        amountPaid: Number(formData.get("amountPaid") ?? 0) || 0,
         notes: String(formData.get("notes") ?? ""),
         lines,
       },
@@ -131,11 +162,18 @@ export async function transitionPurchaseAction(
     return { error: "Status tidak valid." };
   }
 
-  // Receiving is the permission that changes stock, so it is checked
-  // separately from the other transitions.
-  const user = await requirePermission(
-    to === "RECEIVED" ? "purchases:receive" : "purchases:update",
-  );
+  // Each transition is gated by the capability it exercises, not by its target
+  // status: receiving moves stock, cancelling discards an order, and the rest are
+  // paperwork. Keying everything off `purchases:update` meant the separately
+  // grantable `purchases:cancel` was never actually consulted.
+  const permission =
+    to === "RECEIVED"
+      ? "purchases:receive"
+      : to === "CANCELLED"
+        ? "purchases:cancel"
+        : "purchases:update";
+
+  const user = await requirePermission(permission);
 
   try {
     const before = await prisma.purchase.findUnique({
@@ -162,6 +200,14 @@ export async function transitionPurchaseAction(
     revalidatePath("/purchases");
     revalidatePath(`/purchases/${id}`);
     revalidatePath("/inventory");
+    revalidatePath("/products");
+    revalidatePath("/suppliers");
+    revalidatePath("/dashboard");
+    revalidatePath("/notifications");
+
+    // Receiving is the one event that brings stock *in*, so the low-stock alerts
+    // it resolves have to be resolved with it.
+    void generateStockNotifications().catch(() => {});
 
     return {};
   } catch (error) {
@@ -236,14 +282,28 @@ export async function deleteDraftPurchaseAction(
  * returns a result so client components can render inline errors. This thin
  * wrapper bridges the two without changing the shared signature.
  */
+/**
+ * Records a payment from a plain HTML form.
+ *
+ * The form is a server-rendered `<form>`, which has nowhere to render an error.
+ * Rather than logging and leaving the user looking at an unchanged balance, the
+ * message is passed back through the redirect so the page can show it: a payment
+ * that silently fails looks exactly like a payment that was never submitted.
+ */
 export async function recordPaymentFormAction(formData: FormData): Promise<void> {
   const result = await recordPaymentAction(formData);
 
-  if (result.error) {
-    // The page re-renders with the outstanding balance still shown; the failure
-    // is logged here because this form has no client-side error slot.
-    console.error("[purchase] payment not recorded:", result.error);
+  if (!result.error) {
+    redirect("/purchases?payment=recorded");
   }
+
+  // `redirect` throws, so this is only reached on failure. The error text goes
+  // through the query string, which is why it must not contain anything private
+  // beyond what this user is already entitled to see on this purchase.
+  redirect(
+    "/purchases?" +
+      new URLSearchParams({ paymentError: result.error }).toString(),
+  );
 }
 
 // ── Suppliers ─────────────────────────────────────────────────────────────

@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { requirePermission } from "@/lib/auth/session";
 import { audit } from "@/lib/audit";
 import { toActionError } from "@/lib/error";
+import { generateStockNotifications } from "@/lib/notifications/generate";
 import {
   adjustStock,
   approveOpname,
@@ -47,6 +48,27 @@ const VALID_REASONS = new Set<string>(
 );
 
 /**
+ * Parses a stock count from a form field, rejecting anything that is not a plain
+ * whole number.
+ *
+ * `parseInt` is not enough: it accepts "1e3" as 1 and "12abc" as 12. Both are
+ * reachable from a plain `<input type="number">`, and either one records a
+ * wildly wrong count as a permanent ledger entry — an operator typing 1e3
+ * bottles would write off 999 units with an adjustment row explaining why.
+ */
+function parseCount(raw: string): number | null {
+  const trimmed = raw.trim();
+
+  if (!/^\d+$/.test(trimmed)) {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
+
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+/**
  * Applies stock corrections.
  *
  * The operator enters the counted stock rather than a delta, and the payload
@@ -75,22 +97,39 @@ export async function adjustStockAction(
     };
   }
 
-  const inputs: AdjustmentInput[] = productIds.map((productId, index) => ({
-    productId,
-    actualStock: Number.parseInt(actualStocks[index] ?? "", 10),
-    reason: reason as AdjustmentReason,
-    note: notes[index] ?? "",
-  }));
+const inputs: AdjustmentInput[] = [];
+  let countError = false;
 
-  // Blank or unparseable quantities are caught here rather than silently
-  // becoming NaN and producing a meaningless ledger entry.
-  for (const input of inputs) {
-    if (!Number.isFinite(input.actualStock)) {
-      return {
-        error: "Stok aktual harus berupa angka.",
-        fieldErrors: { actualStock: "Wajib diisi dengan angka." },
-      };
+  for (const [index, productId] of productIds.entries()) {
+    const actualStock = parseCount(actualStocks[index] ?? "");
+
+    if (actualStock === null) {
+      countError = true;
+      break;
     }
+
+    inputs.push({
+      productId,
+      actualStock,
+      reason: reason as AdjustmentReason,
+      note: notes[index] ?? "",
+    });
+  }
+
+  if (countError) {
+    return {
+      error: "Stok aktual harus berupa bilangan bulat yang valid.",
+      fieldErrors: { actualStock: "Isi dengan angka bulat, tanpa satuan." },
+    };
+  }
+
+  // The same product listed twice would produce two deltas against one baseline
+  // and both would inherit the first row's reason and note.
+  if (new Set(inputs.map((input) => input.productId)).size !== inputs.length) {
+    return {
+      error: "Produk yang sama tercatat lebih dari sekali.",
+      fieldErrors: { actualStock: "Hapus baris duplikat." },
+    };
   }
 
   try {
@@ -107,9 +146,15 @@ export async function adjustStockAction(
       },
     });
 
-    revalidatePath("/inventory");
+revalidatePath("/inventory");
     revalidatePath("/inventory/movements");
     revalidatePath("/dashboard");
+    revalidatePath("/notifications");
+
+    // Stock just moved, so the alerts derived from it are stale until they are
+    // re-derived. Fired after commit and detached: a failure here must never
+    // report the adjustment as failed when it has already been written.
+    void generateStockNotifications().catch(() => {});
 
     return {};
   } catch (error) {
@@ -167,24 +212,22 @@ await requirePermission("stock:opname");
 
   const opnameId = String(formData.get("opnameId") ?? "");
   const productId = String(formData.get("productId") ?? "");
-  const physicalStock = Number.parseInt(
-    String(formData.get("physicalStock") ?? ""),
-    10,
-  );
+  const physicalStock = parseCount(String(formData.get("physicalStock") ?? ""));
+  const note = String(formData.get("note") ?? "");
 
   if (!opnameId || !productId) {
     return { error: "Data tidak lengkap." };
   }
 
-  if (!Number.isFinite(physicalStock)) {
+  if (physicalStock === null) {
     return {
-      error: "Jumlah fisik harus berupa angka.",
-      fieldErrors: { physicalStock: "Wajib diisi dengan angka." },
+      error: "Jumlah fisik harus berupa bilangan bulat yang valid.",
+      fieldErrors: { physicalStock: "Isi dengan angka bulat, tanpa satuan." },
     };
   }
 
   try {
-    await recordOpnameCount(opnameId, productId, physicalStock);
+    await recordOpnameCount(opnameId, productId, physicalStock, note);
     revalidatePath(`/inventory/opname/${opnameId}`);
     return {};
   } catch (error) {
@@ -224,6 +267,12 @@ export async function approveOpnameAction(
     revalidatePath("/inventory/opname");
     revalidatePath(`/inventory/opname/${opnameId}`);
     revalidatePath("/dashboard");
+    revalidatePath("/notifications");
+
+    // The approval just changed real stock; the alerts derived from it have to
+    // follow, or the dashboard keeps claiming a product is in stock that no
+    // longer exists.
+    void generateStockNotifications().catch(() => {});
 
     return {};
   } catch (error) {
@@ -243,17 +292,18 @@ export async function cancelOpnameAction(
   }
 
   try {
-    await cancelOpname(opnameId);
+await cancelOpname(opnameId);
 
     await audit({
       userId: user.id,
-      action: "STOCK_OPNAME_CREATE",
+      action: "STOCK_OPNAME_CANCEL",
       entity: "StockOpname",
       entityId: opnameId,
       newData: { cancelled: true },
     });
 
     revalidatePath("/inventory/opname");
+    revalidatePath(`/inventory/opname/${opnameId}`);
     return {};
   } catch (error) {
     return fail(error);

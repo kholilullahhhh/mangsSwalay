@@ -1,7 +1,7 @@
 import "server-only";
 
 import type { StockMovementType } from "@/generated/prisma/enums";
-import type { StockClient as TxClient } from "@/lib/db-client";
+import type { BatchClient, StockClient as TxClient } from "@/lib/db-client";
 
 /**
  * Stock mutation — the single choke point for every change to `Product.stock`.
@@ -77,20 +77,40 @@ export async function applyStockChange(
     throw new Error(`Quantity tidak valid: ${change.quantity}`);
   }
 
-  const product = await tx.product.findUnique({
-    where: { id: change.productId },
-    select: { id: true, name: true, stock: true },
-  });
+  if (
+    change.requireAtLeast !== undefined &&
+    change.requireAtLeast > 0 &&
+    change.direction === "OUT"
+  ) {
+    const current = await tx.product.findUnique({
+      where: { id: change.productId },
+      select: { name: true, stock: true },
+    });
 
-  if (!product) {
-    throw new UnknownProductError(change.productId);
+    if (!current) {
+      throw new UnknownProductError(change.productId);
+    }
+
+    if (current.stock > change.requireAtLeast) {
+      throw new InsufficientStockError(
+        change.productId,
+        current.name,
+        change.quantity,
+        current.stock,
+      );
+    }
   }
 
-  const previousStock = product.stock;
-
-  // Conditional write. `count === 0` means another transaction already took the
-  // stock we needed, so this is the concurrency guard.
-  const result = await tx.product.updateMany({
+  // Conditional write, and the rows it touched come back so the ledger records
+  // what the database actually holds.
+  //
+  // `count === 0` means another transaction already took the stock we needed, so
+  // this is the concurrency guard. Deriving `previousStock` from the *returned*
+  // stock rather than from an earlier read matters just as much: under
+  // READ COMMITTED that read can be arbitrarily stale, and a ledger whose
+  // before/after values disagree with the counter is worse than no ledger,
+  // because it is the thing the counter gets reconciled against.
+  const updated = await tx.product.updateManyAndReturn({
     where: {
       id: change.productId,
       ...(change.direction === "OUT"
@@ -101,27 +121,34 @@ export async function applyStockChange(
       change.direction === "OUT"
         ? { stock: { decrement: change.quantity } }
         : { stock: { increment: change.quantity } },
+    select: { stock: true },
   });
 
-  if (result.count === 0) {
+  if (updated.length === 0) {
+    // Either the product does not exist, or the guard rejected the write.
     // Re-read for an accurate error message: the earlier read may be stale.
     const current = await tx.product.findUnique({
       where: { id: change.productId },
       select: { name: true, stock: true },
     });
 
+    if (!current) {
+      throw new UnknownProductError(change.productId);
+    }
+
     throw new InsufficientStockError(
       change.productId,
-      current?.name ?? product.name,
+      current.name,
       change.quantity,
-      current?.stock ?? 0,
+      current.stock,
     );
   }
 
-  const newStock =
+  const newStock = updated[0].stock;
+  const previousStock =
     change.direction === "OUT"
-      ? previousStock - change.quantity
-      : previousStock + change.quantity;
+      ? newStock + change.quantity
+      : newStock - change.quantity;
 
   await tx.inventoryMovement.create({
     data: {
@@ -137,7 +164,78 @@ export async function applyStockChange(
     },
   });
 
+  // Keep batch balances telling the truth alongside the product counter.
+  await syncBatches(tx, change.productId, change.quantity, change.direction);
+
   return { previousStock, newStock };
+}
+
+/**
+ * Moves the batch counter with the product counter.
+ *
+ * `Product.stock` stays authoritative — batches are the expiry dimension on top
+ * of it, not a second source of truth — but leaving `ProductBatch.quantity` at
+ * whatever the purchase receipt set would make the Batch & Expiry screen, the
+ * dashboard widget and the expiry notifications report stock that has already
+ * been sold. So the batches are kept in step, oldest-expiring-first on the way
+ * out (FEFO: the goods that go out first are the ones closest to expiring).
+ *
+ * Returns and voids have no batch to identify, so units coming back in are
+ * credited to the batch with the longest remaining life, which is where they are
+ * most likely to have come from.
+ *
+ * Partial coverage is deliberate and safe: a product can hold stock that never
+ * had a batch (opening stock, or a receipt without an expiry date), so the
+ * batches are adjusted by whatever they actually cover rather than being
+ * required to reconcile to the product counter.
+ */
+async function syncBatches(
+  tx: BatchClient,
+  productId: string,
+  quantity: number,
+  direction: "IN" | "OUT",
+): Promise<void> {
+  const batches = await tx.productBatch.findMany({
+    where: { productId },
+    select: { id: true, quantity: true, expiryDate: true },
+    orderBy: { expiryDate: "asc" },
+  });
+
+  if (batches.length === 0) {
+    return;
+  }
+
+  if (direction === "IN") {
+    // Back to the batch that keeps longest: the most recently received stock.
+    const target = [...batches]
+      .reverse()
+      .find((batch) => batch.quantity > 0) ?? batches[batches.length - 1];
+
+    await tx.productBatch.update({
+      where: { id: target.id },
+      data: { quantity: { increment: quantity } },
+    });
+
+    return;
+  }
+
+  let remaining = quantity;
+
+  for (const batch of batches) {
+    if (remaining <= 0) break;
+
+    const take = Math.min(remaining, batch.quantity);
+
+    if (take <= 0) continue;
+
+    // Conditional so a batch can never be driven negative by a concurrent sale.
+    const claimed = await tx.productBatch.updateMany({
+      where: { id: batch.id, quantity: { gte: take } },
+      data: { quantity: { decrement: take } },
+    });
+
+    remaining -= claimed.count === 0 ? 0 : take;
+  }
 }
 
 /**

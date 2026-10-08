@@ -22,7 +22,7 @@ import {
 } from "@/components/data/table-pagination";
 import { EmptyState } from "@/components/data/empty-state";
 
-import { NewCustomerButton } from "./new-customer-button";
+import { CustomerDialog } from "./new-customer-button";
 
 export const metadata: Metadata = {
   title: "Pelanggan",
@@ -80,7 +80,7 @@ export default async function CustomersPage({
           </p>
         </div>
 
-        {canManage ? <NewCustomerButton /> : null}
+        {canManage ? <CustomerDialog /> : null}
       </div>
 
       <Card>
@@ -133,9 +133,10 @@ export default async function CustomersPage({
                   <TableHead>Nama</TableHead>
                   <TableHead>Kontak</TableHead>
                   <TableHead>Member</TableHead>
-                  <TableHead className="text-right">Transaksi</TableHead>
+<TableHead className="text-right">Transaksi</TableHead>
                   <TableHead className="text-right">Poin</TableHead>
                   <TableHead>Bergabung</TableHead>
+                  {canManage ? <TableHead className="w-10" /> : null}
                 </TableRow>
               </TableHeader>
 
@@ -171,9 +172,26 @@ export default async function CustomersPage({
                     <TableCell className="tabular text-right">
                       {formatNumber(row.points)}
                     </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
+<TableCell className="text-xs text-muted-foreground">
                       {formatDate(row.createdAt)}
                     </TableCell>
+                    {canManage ? (
+                      <TableCell>
+                        <CustomerDialog
+                          trigger="icon"
+                          customer={{
+                            id: row.id,
+                            name: row.name,
+                            phone: row.phone,
+                            email: row.email,
+                            address: row.address,
+                            notes: row.notes,
+                            isMember: row.isMember,
+                            isActive: row.isActive,
+                          }}
+                        />
+                      </TableCell>
+                    ) : null}
                   </TableRow>
                 ))}
               </TableBody>

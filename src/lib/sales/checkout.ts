@@ -50,6 +50,8 @@ export const checkoutSchema = z.object({
   ]),
   amountPaid: z.coerce.number().min(0),
   manualDiscount: z.coerce.number().min(0).default(0),
+  /** Loyalty points the member is spending. Validated against the real balance. */
+  redeemPoints: z.coerce.number().int().min(0).max(1_000_000).default(0),
   /** Accepted for compatibility, but never trusted: see `resolveTaxRate`. */
   taxRate: z.coerce.number().min(0).max(1).default(0),
   notes: z.string().max(500).optional(),
@@ -99,6 +101,10 @@ export interface CheckoutResult {
   amountPaid: number;
   change: number;
   pointsEarned: number;
+  /** Points this member spent, so a refund knows what to give back. */
+  pointsRedeemed: number;
+  /** Rupiah those points were worth on this sale. */
+  pointsDiscount: number;
   promotionCode: string | null;
   cashierName: string;
   customerName: string | null;
@@ -118,7 +124,14 @@ export interface CheckoutActor {
  */
 export type CheckoutClient = Pick<
   TxClient,
-  "product" | "sale" | "promotion" | "customer" | "storeSetting" | "inventoryMovement"
+  | "product"
+  | "productBatch"
+  | "sale"
+  | "promotion"
+  | "customer"
+  | "storeSetting"
+  | "cashShift"
+  | "inventoryMovement"
 >;
 
 /**
@@ -157,16 +170,20 @@ async function resolveTaxRate(tx: CheckoutClient): Promise<number> {
 export async function checkoutSale(
   input: CheckoutInput,
   actor: CheckoutActor,
-  options: { client?: CheckoutClient } = {},
+  options: { client?: CheckoutClient; canApplyDiscount?: boolean } = {},
 ): Promise<CheckoutResult> {
   const data = checkoutSchema.parse(input);
 
+  const resolved = {
+    canApplyDiscount: options.canApplyDiscount ?? true,
+  };
+
   if (options.client) {
-    return runCheckout(options.client, data, actor);
+    return runCheckout(options.client, data, actor, resolved);
   }
 
   return prisma.$transaction(
-    (tx) => runCheckout(tx, data, actor),
+    (tx) => runCheckout(tx, data, actor, resolved),
     {
       // A contended row (two cashiers selling the same last unit) aborts one
       // transaction rather than silently waiting; the client can retry.
@@ -181,8 +198,23 @@ async function runCheckout(
   tx: CheckoutClient,
   data: z.infer<typeof checkoutSchema>,
   actor: CheckoutActor,
+  options: { canApplyDiscount: boolean },
 ): Promise<CheckoutResult> {
   {
+      // ── 0. Who is allowed to give money away? ───────────────────────────
+      // Checked before anything is read or written, because a discount that the
+      // cashier has no authority to grant must never influence the total — not
+      // even in a preview that is then thrown away.
+      const requestedDiscount =
+        data.manualDiscount +
+        data.lines.reduce((sum, line) => sum + (line.lineDiscount ?? 0), 0);
+
+      if (requestedDiscount > 0 && !options.canApplyDiscount) {
+        throw new BusinessRuleError(
+          "Anda tidak memiliki izin untuk memberikan diskon manual.",
+        );
+      }
+
       // ── 1. Re-read products; the client payload is not trusted ──────────
       const productIds = data.lines.map((line) => line.productId);
 
@@ -197,6 +229,7 @@ async function runCheckout(
           isActive: true,
           sellingPrice: true,
           purchasePrice: true,
+          minSellingPrice: true,
           categoryId: true,
         },
       });
@@ -222,6 +255,40 @@ async function runCheckout(
           throw new BusinessRuleError(
             `Stok ${product.name} tidak mencukupi. Diminta ${line.quantity}, tersedia ${product.stock}.`,
           );
+        }
+      }
+
+      // ── 1b. Expiry gate ────────────────────────────────────────────────
+      // A batch-tracked product whose every remaining batch is past its expiry
+      // date must not reach a customer, however much stock the counter claims.
+      const batchProductIds = products.map((product) => product.id);
+
+      if (batchProductIds.length > 0) {
+        const now = new Date();
+        const batchRows = await tx.productBatch.findMany({
+          where: { productId: { in: batchProductIds }, quantity: { gt: 0 } },
+          select: { productId: true, expiryDate: true },
+        });
+
+        const freshByProduct = new Set<string>();
+
+        for (const row of batchRows) {
+          if (row.expiryDate > now) {
+            freshByProduct.add(row.productId);
+          }
+        }
+
+        const trackedProducts = new Set(batchRows.map((row) => row.productId));
+
+        for (const product of products) {
+          if (
+            trackedProducts.has(product.id) &&
+            !freshByProduct.has(product.id)
+          ) {
+            throw new BusinessRuleError(
+              `${product.name} sudah kedaluwarsa dan tidak bisa dijual.`,
+            );
+          }
         }
       }
 
@@ -252,6 +319,7 @@ async function runCheckout(
       let appliedPromotionCode: string | null = null;
       let promotionId: string | null = null;
       let promotionHasLimit = false;
+      let promotionUsageLimit = 0;
 
       if (data.promotionCode) {
         const code = data.promotionCode.toUpperCase();
@@ -319,9 +387,91 @@ async function runCheckout(
         appliedPromotionCode = promotion.code;
         promotionId = promotion.id;
         promotionHasLimit = promotion.usageLimit !== null;
+        promotionUsageLimit = promotion.usageLimit ?? 0;
       }
 
-      // ── 4. Totals, with tax from settings ────────────────────────────────
+      // ── 4. Loyalty configuration, read before the totals ───────────────
+      // Points can be both spent and earned on one sale, so the customer and the
+      // loyalty settings have to be resolved before the total is computed —
+      // otherwise the redemption could not be priced into what the customer owes.
+      const [pointsSetting, pointValueSetting, loyaltyEnabled, customer] =
+        await Promise.all([
+          tx.storeSetting.findUnique({ where: { key: "loyalty.ratio" } }),
+          tx.storeSetting.findUnique({ where: { key: "loyalty.pointValue" } }),
+          tx.storeSetting.findUnique({ where: { key: "loyalty.enabled" } }),
+          data.customerId
+            ? tx.customer.findUnique({
+                where: { id: data.customerId },
+                select: {
+                  id: true,
+                  name: true,
+                  isMember: true,
+                  isActive: true,
+                  points: true,
+                },
+              })
+            : Promise.resolve(null),
+        ]);
+
+      if (data.customerId && !customer) {
+        throw new ValidationError("Pelanggan tidak ditemukan.");
+      }
+
+      if (customer && !customer.isActive) {
+        throw new BusinessRuleError("Pelanggan sudah dinonaktifkan.");
+      }
+
+      const pointsRatio =
+        pointsSetting && typeof pointsSetting.value === "number"
+          ? pointsSetting.value
+          : DEFAULT_POINTS_RATIO;
+
+      // The kill switch has to be honoured here, not just displayed on the
+      // settings screen: leaving it unread would let a store that has turned
+      // loyalty off keep accruing points nobody can spend.
+      const loyaltyOn = loyaltyEnabled?.value !== false;
+      const isMember = loyaltyOn && Boolean(customer?.isMember);
+
+      // ── 4b. Redeeming points ────────────────────────────────────────────
+      // The store sets the rupiah value of a point; the number of points is
+      // requested, and the balance is read here rather than trusted. Without a
+      // redemption path the loyalty programme was earn-only: points accrued
+      // forever, `loyalty.pointValue` was displayed on the settings screen and
+      // read by nothing, and there was no reason for a customer to be a member.
+      const pointValue =
+        pointValueSetting && typeof pointValueSetting.value === "number"
+          ? pointValueSetting.value
+          : 0;
+
+      let pointsRedeemed = 0;
+      let pointsDiscount = 0;
+
+      if (data.redeemPoints > 0) {
+        if (!isMember) {
+          throw new BusinessRuleError(
+            "Hanya member yang bisa menukar poin.",
+          );
+        }
+
+        if (pointValue <= 0) {
+          throw new BusinessRuleError(
+            "Nilai tukar poin belum diatur. Hubungi administrator toko.",
+          );
+        }
+
+        if (data.redeemPoints > (customer?.points ?? 0)) {
+          throw new BusinessRuleError(
+            `Poin tidak cukup. Tersedia ${customer?.points ?? 0} poin.`,
+          );
+        }
+
+        pointsRedeemed = data.redeemPoints;
+        // Flooring the value keeps redemption from handing out a fraction of a
+        // rupiah, and from ever exceeding what the customer actually owes.
+        pointsDiscount = Math.floor(pointsRedeemed * pointValue);
+      }
+
+      // ── 4c. Totals, with tax from settings ─────────────────────────────
       const taxRate = await resolveTaxRate(tx);
 
       const totals = calculateTotals({
@@ -336,11 +486,46 @@ async function runCheckout(
             ]
           : [],
         manualDiscount: data.manualDiscount,
+        pointsDiscount,
         taxRate,
       });
 
       if (totals.total <= 0) {
         throw new BusinessRuleError("Total transaksi harus lebih dari nol.");
+      }
+
+      // ── 4b. The shift this sale is cash accountable to ──────────────────
+      // The shift is the entire basis of cash reconciliation: expected cash at
+      // close is the opening float plus every CASH sale booked against the
+      // shift. So the id is verified here rather than accepted from the client —
+      // otherwise a cashier can book takings onto someone else's till, or onto a
+      // shift that has already been closed and reconciled, and the variance that
+      // is supposed to expose a shortfall simply absorbs it.
+      let shiftId: string | null = null;
+
+      if (data.shiftId) {
+        const shift = await tx.cashShift.findFirst({
+          where: { id: data.shiftId, userId: actor.id, status: "OPEN" },
+          select: { id: true },
+        });
+
+        if (!shift) {
+          throw new BusinessRuleError(
+            "Shift kasir tidak valid atau sudah ditutup. Buka shift sebelum menjual.",
+          );
+        }
+
+        shiftId = shift.id;
+      }
+
+      // Cash with no open shift is money the store cannot account for: there is
+      // no opening float to reconcile against and no till to compare the closing
+      // count to. The POS offers non-cash methods in that state, because those
+      // never touch the drawer.
+      if (data.paymentMethod === "CASH" && !shiftId) {
+        throw new BusinessRuleError(
+          "Buka shift kasir sebelum menerima pembayaran tunai.",
+        );
       }
 
       // Cash must cover the total; other methods settle at exactly the total.
@@ -356,27 +541,19 @@ async function runCheckout(
       const change =
         data.paymentMethod === "CASH" ? amountPaid - totals.total : 0;
 
-      // ── 5. Loyalty configuration ─────────────────────────────────────────
-      const [pointsSetting, customer] = await Promise.all([
-        tx.storeSetting.findUnique({ where: { key: "loyalty.ratio" } }),
-        data.customerId
-          ? tx.customer.findUnique({
-              where: { id: data.customerId },
-              select: { id: true, name: true, isMember: true },
-            })
-          : Promise.resolve(null),
-      ]);
-
-      const pointsRatio =
-        pointsSetting && typeof pointsSetting.value === "number"
-          ? pointsSetting.value
-          : DEFAULT_POINTS_RATIO;
-
+      // ── 5. Points earned on this sale ─────────────────────────────────
       // Points accrue on post-discount, pre-tax revenue: tax is collected for the
-      // state, so a customer earns nothing on it.
+      // state, so a customer earns nothing on it. Net of anything redeemed, so a
+      // member paying entirely with points does not also bank points for it.
       const pointsEarned =
-        customer?.isMember && pointsRatio > 0
-          ? Math.floor((totals.total - totals.tax) / pointsRatio)
+        isMember && pointsRatio > 0
+          ? Math.max(
+              0,
+              Math.floor(
+                (totals.total - totals.tax - totals.pointsDiscount) /
+                  pointsRatio,
+              ),
+            )
           : 0;
 
       // ── 6. Persist the sale ──────────────────────────────────────────────
@@ -384,8 +561,13 @@ async function runCheckout(
       // printed receipt cannot disagree about when the transaction happened.
       const soldAt = new Date();
 
+      // `totals.subtotal` is already net of the line discounts (`cartSubtotal`
+      // works on post-line-discount amounts), so adding `lineDiscountTotal` here
+      // would count the same rupiah twice and the printed receipt would no longer
+      // foot: subtotal − discount + tax ≠ total. The promotion and manual
+      // discounts are the ones still to be deducted from that subtotal.
       const totalDiscount =
-        totals.promotionDiscount + totals.manualDiscount + totals.lineDiscountTotal;
+        totals.promotionDiscount + totals.pointsDiscount + totals.manualDiscount;
 
       const sale = await withDocumentNumber("INV", soldAt, (invoiceNumber) =>
         tx.sale.create({
@@ -393,7 +575,8 @@ async function runCheckout(
             invoiceNumber,
             customerId: customer?.id ?? null,
             userId: actor.id,
-            shiftId: data.shiftId ?? null,
+            // The verified shift, not whatever the request claimed.
+            shiftId,
             date: soldAt,
             promotionCode: appliedPromotionCode,
             subtotal: totals.subtotal,
@@ -405,6 +588,7 @@ async function runCheckout(
             change,
             status: "COMPLETED",
             pointsEarned,
+            pointsRedeemed,
             notes: data.notes || null,
             items: {
               create: cartLines.map((line) => {
@@ -430,11 +614,23 @@ async function runCheckout(
       // ── 7. Consume one use of the promotion ──────────────────────────────
       // Only bumped when the promotion is capped, and inside this transaction so
       // two concurrent checkouts cannot both take the last available use.
+      //
+      // The claim is conditional rather than a bare increment: the cap was
+      // checked against a snapshot read earlier in this transaction, so two
+      // checkouts can both have been told the code is valid. Making `usedCount`
+      // the thing the write is conditioned on means the loser is refused instead
+      // of handing out one discount too many.
       if (promotionId && promotionHasLimit) {
-        await tx.promotion.update({
-          where: { id: promotionId },
+        const claimed = await tx.promotion.updateMany({
+          where: { id: promotionId, usedCount: { lt: promotionUsageLimit } },
           data: { usedCount: { increment: 1 } },
         });
+
+        if (claimed.count === 0) {
+          throw new BusinessRuleError(
+            "Kuota promo ini sudah habis dipakai. Minta pelanggan tanpa kode promo.",
+          );
+        }
       }
 
       // ── 8. Decrement stock through the guarded ledger ────────────────────
@@ -453,11 +649,18 @@ async function runCheckout(
       );
 
       // ── 9. Customer totals and loyalty points ────────────────────────────
+      // Spend and earn are combined into one net change. Declaring both a
+      // `decrement` and an `increment` for the same field looks like it says
+      // "spend and earn" but Prisma keeps only the last one — the redemption
+      // would silently never be taken and the member pays cash for goods they
+      // already paid for in points.
       if (customer) {
+        const pointsDelta = pointsEarned - pointsRedeemed;
+
         await tx.customer.update({
           where: { id: customer.id },
           data: {
-            points: { increment: pointsEarned },
+            ...(pointsDelta !== 0 ? { points: { increment: pointsDelta } } : {}),
             totalPurchases: { increment: 1 },
           },
         });
@@ -491,6 +694,8 @@ async function runCheckout(
         amountPaid,
         change,
         pointsEarned,
+        pointsRedeemed,
+        pointsDiscount: totals.pointsDiscount,
         promotionCode: appliedPromotionCode,
         cashierName: actor.name,
         customerName: customer?.name ?? null,

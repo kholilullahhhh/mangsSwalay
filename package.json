@@ -17,17 +17,19 @@
     "test:reports": "tsx --tsconfig tsconfig.scripts.json scripts/test-reports.ts",
     "test:inventory": "tsx --tsconfig tsconfig.scripts.json scripts/test-inventory.ts",
     "test:flows": "tsx --tsconfig tsconfig.scripts.json scripts/test-flows.ts",
+    "test:smoke": "tsx --tsconfig tsconfig.scripts.json scripts/smoke-pos-flow.ts",
     "test:boundary": "tsx --tsconfig tsconfig.scripts.json scripts/audit-client-boundary.ts",
     "test:routes": "tsx --tsconfig tsconfig.scripts.json scripts/audit-routes.ts",
     "test:http": "tsx --tsconfig tsconfig.scripts.json scripts/test-http.ts",
-    "test:all": "npm run test && npm run test:db && npm run test:purchase && npm run test:ledger && npm run test:sales && npm run test:reports && npm run test:inventory && npm run test:routes && npm run test:boundary && npm run test:flows && npm run test:http",
+    "test:all": "npm run test && npm run test:db && npm run test:purchase && npm run test:ledger && npm run test:sales && npm run test:reports && npm run test:inventory && npm run test:routes && npm run test:boundary && npm run test:flows && npm run test:smoke && npm run test:http",
     "verify": "npm run test:all && npm run build",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
-    "db:studio": "prisma studio",
-    "db:seed": "tsx prisma/seed.ts"
+"db:studio": "prisma studio",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:prune-sessions": "tsx --tsconfig tsconfig.scripts.json scripts/prune-sessions.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.9.1",

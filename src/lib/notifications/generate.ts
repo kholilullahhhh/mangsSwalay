@@ -60,11 +60,17 @@ export async function generateStockNotifications(): Promise<GenerationResult> {
   });
 
   // Open alerts this generator owns, so conditions that stopped being true can
-  // be resolved rather than left on screen forever.
+  // be resolved rather than left on screen forever. Both prefixes it writes are
+  // matched: expiry alerts use `expiry:`, and tracking only `stock:` meant a
+  // written-off batch kept re-opening its own "Kedaluwarsa" alert on every run
+  // and never cleared.
   const openStockAlerts = await prisma.notification.findMany({
     where: {
       isRead: false,
-      dedupeKey: { startsWith: "stock:" },
+      OR: [
+        { dedupeKey: { startsWith: "stock:" } },
+        { dedupeKey: { startsWith: "expiry:" } },
+      ],
     },
     select: { id: true, dedupeKey: true },
   });
@@ -93,6 +99,36 @@ export async function generateStockNotifications(): Promise<GenerationResult> {
     message: string;
     link: string;
   }> = [];
+
+  // Expiry is a separate concern from low stock and is reported per batch, since
+  // a product can have plenty of stock in one batch while another is expiring.
+  //
+  // Fetched once for every product rather than inside the loop below: querying
+  // per product meant a 500-item catalogue issued 500 round trips every time
+  // anyone opened the notification screen.
+  const expiringBatches = await prisma.productBatch.findMany({
+    where: {
+      quantity: { gt: 0 },
+      // Only batches that are already expired or fall inside the warning window.
+      expiryDate: { lte: expiryHorizon },
+      product: { isActive: true },
+    },
+    select: {
+      id: true,
+      batchNumber: true,
+      expiryDate: true,
+      quantity: true,
+      product: { select: { id: true, name: true } },
+    },
+  });
+
+  const batchesByProduct = new Map<string, typeof expiringBatches>();
+
+  for (const batch of expiringBatches) {
+    const existing = batchesByProduct.get(batch.product.id);
+    if (existing) existing.push(batch);
+    else batchesByProduct.set(batch.product.id, [batch]);
+  }
 
   for (const product of products) {
     // Out of stock takes precedence over low stock: a cashier seeing "low stock"
@@ -125,21 +161,11 @@ export async function generateStockNotifications(): Promise<GenerationResult> {
       });
     }
 
-    // Expired stock is a separate concern from low stock and is reported against
-    // the batch, since the units may still be sellable in other batches.
-    const batches = await prisma.productBatch.findMany({
-      where: { productId: product.id, quantity: { gt: 0 } },
-      select: { id: true, batchNumber: true, expiryDate: true, quantity: true },
-    });
-
-    for (const batch of batches) {
+    for (const batch of batchesByProduct.get(product.id) ?? []) {
       const expired = batch.expiryDate.getTime() < now.getTime();
 
-      const expiringSoon =
-        !expired && batch.expiryDate.getTime() <= expiryHorizon.getTime();
-
-      if (!expired && !expiringSoon) continue;
-
+      // The query already limited rows to the window; this keeps the rule
+      // explicit at the point of use so it survives a change to the query.
       const days = Math.ceil(
         (batch.expiryDate.getTime() - now.getTime()) / DAY_MS,
       );

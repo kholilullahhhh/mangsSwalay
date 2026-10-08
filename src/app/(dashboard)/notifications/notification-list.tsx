@@ -24,7 +24,7 @@ import {
   deleteNotificationAction,
   markAllNotificationsReadAction,
   markNotificationReadAction,
-} from "@/app/(dashboard)/admin/actions";
+} from "@/actions/admin-actions";
 import { refreshNotificationsAction } from "./actions";
 
 /**

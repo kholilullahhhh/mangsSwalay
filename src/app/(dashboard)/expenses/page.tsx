@@ -25,7 +25,7 @@ import {
 } from "@/components/data/table-pagination";
 import { EmptyState } from "@/components/data/empty-state";
 
-import { NewExpenseButton } from "./new-expense-button";
+import { DeleteExpenseButton, NewExpenseButton } from "./new-expense-button";
 
 export const metadata: Metadata = {
   title: "Pengeluaran",
@@ -135,7 +135,8 @@ export default async function ExpensesPage({
                     <TableHead>Kategori</TableHead>
                     <TableHead>Keterangan</TableHead>
                     <TableHead>Dicatat oleh</TableHead>
-                    <TableHead className="text-right">Nominal</TableHead>
+<TableHead className="text-right">Nominal</TableHead>
+                    {canManage ? <TableHead className="w-10" /> : null}
                   </TableRow>
                 </TableHeader>
 
@@ -157,9 +158,17 @@ export default async function ExpensesPage({
                       <TableCell className="text-xs text-muted-foreground">
                         {expense.user.name}
                       </TableCell>
-                      <TableCell className="tabular text-right font-medium">
+<TableCell className="tabular text-right font-medium">
                         {formatCurrency(expense.amount)}
                       </TableCell>
+                      {canManage ? (
+                        <TableCell>
+                          <DeleteExpenseButton
+                            expenseId={expense.id}
+                            description={expense.description ?? ""}
+                          />
+                        </TableCell>
+                      ) : null}
                     </TableRow>
                   ))}
                 </TableBody>

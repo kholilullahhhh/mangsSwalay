@@ -34,7 +34,7 @@ export function ReceiptDialog({
   onClose,
 }: {
   result: CheckoutResult | null;
-  store: { name: string; address: string; phone: string };
+  store: { name: string; address: string; phone: string; footer: string };
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -131,12 +131,23 @@ export function ReceiptDialog({
                 <span className="tabular">{formatCurrency(result.subtotal)}</span>
               </div>
 
-              {result.discount > 0 ? (
+              {result.pointsDiscount > 0 ? (
+                <div className="flex justify-between gap-2">
+                  <span>Poin ditukar ({result.pointsRedeemed} poin)</span>
+                  <span className="tabular">
+                    -{formatCurrency(result.pointsDiscount)}
+                  </span>
+                </div>
+              ) : null}
+
+              {result.discount - result.pointsDiscount > 0 ? (
                 <div className="flex justify-between gap-2">
                   <span>
                     Diskon{result.promotionCode ? ` (${result.promotionCode})` : ""}
                   </span>
-                  <span className="tabular">-{formatCurrency(result.discount)}</span>
+                  <span className="tabular">
+                    -{formatCurrency(result.discount - result.pointsDiscount)}
+                  </span>
                 </div>
               ) : null}
 
@@ -179,7 +190,7 @@ export function ReceiptDialog({
               <div className="my-2 border-t border-dashed" />
 
               <p className="text-center">
-                Terima kasih telah berbelanja
+                {store.footer || "Terima kasih telah berbelanja"}
                 <br />
                 di {store.name}
               </p>

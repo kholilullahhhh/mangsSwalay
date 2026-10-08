@@ -17,12 +17,6 @@
   --color-brand-800: oklch(0.37 0.09 157);
   --color-brand-900: oklch(0.31 0.07 157);
   --color-brand-950: oklch(0.19 0.05 157);
-
-  /* Semantic stock-status colours used across badges and alerts. */
-  --color-stock-ok: oklch(0.6 0.17 156);
-  --color-stock-low: oklch(0.77 0.16 75);
-  --color-stock-out: oklch(0.58 0.22 27);
-  --color-stock-expiring: oklch(0.65 0.19 40);
 }
 
 @custom-variant dark (&:is(.dark *));
@@ -50,6 +44,18 @@
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  /* Stock-status colours are remapped per theme rather than fixed.
+
+     They were declared as static `@theme` values, so they never changed between
+     light and dark — and as *text* on a card they failed WCAG AA in one mode or
+     the other: amber at 0.77 lightness measured 2.1:1 on white, while the red
+     measured 3.7:1 on the dark card. They are used as bare `text-stock-*` in
+     ~70 places, so there is no per-call-site `dark:` variant to fall back on. */
+  --color-stock-ok: var(--stock-ok);
+  --color-stock-low: var(--stock-low);
+  --color-stock-out: var(--stock-out);
+  --color-stock-expiring: var(--stock-expiring);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -87,6 +93,18 @@
   --accent: oklch(0.94 0.03 156);
   --accent-foreground: oklch(0.31 0.07 157);
   --destructive: oklch(0.577 0.245 27.325);
+  /* Was never declared. `text-destructive-foreground` is used on the unread
+     notification badge, and with no token behind it Tailwind emitted nothing, so
+     the count inherited the page's foreground colour: 3.9:1 in light and 2.8:1
+     in dark on the destructive background. Both fail AA. */
+  --destructive-foreground: oklch(0.99 0.01 27);
+  /* Stock status, light mode. Each clears 4.5:1 as text on a white card:
+     amber at 0.77 lightness only managed 2.1:1, so it is darkened here and
+     lightened again in `.dark` rather than being fixed for one mode. */
+  --stock-ok: oklch(0.51 0.15 156);
+  --stock-low: oklch(0.55 0.16 60);
+  --stock-out: oklch(0.53 0.21 27);
+  --stock-expiring: oklch(0.55 0.18 40);
   --border: oklch(0.92 0.01 160);
   --input: oklch(0.92 0.01 160);
   --ring: oklch(0.51 0.14 156);
@@ -95,7 +113,7 @@
   --chart-2: oklch(0.62 0.16 45);
   --chart-3: oklch(0.58 0.17 250);
   --chart-4: oklch(0.6 0.16 330);
-  --chart-5: oklch(0.68 0.15 95);
+  --chart-5: oklch(0.58 0.14 95);
   --radius: 0.625rem;
   --sidebar: oklch(0.99 0.005 156);
   --sidebar-foreground: oklch(0.18 0.01 160);
@@ -126,6 +144,13 @@
   --accent: oklch(0.31 0.04 158);
   --accent-foreground: oklch(0.96 0.01 156);
   --destructive: oklch(0.68 0.19 22);
+  --destructive-foreground: oklch(0.19 0.05 27);
+  /* Lightened so they clear AA as text on the dark card, which the single set of
+     static values did not: the same red that passed on white sat at 3.7:1 here. */
+  --stock-ok: oklch(0.78 0.16 156);
+  --stock-low: oklch(0.83 0.15 80);
+  --stock-out: oklch(0.74 0.18 25);
+  --stock-expiring: oklch(0.78 0.17 45);
   --border: oklch(1 0 0 / 12%);
   --input: oklch(1 0 0 / 16%);
   --ring: oklch(0.72 0.17 156);
@@ -178,4 +203,54 @@
 @utility receipt-paper {
   width: 80mm;
   max-width: 100%;
+}
+
+/*
+ * Printing a receipt.
+ *
+ * The receipt is a dialog inside the full POS screen, so without this a cashier
+ * pressing "Cetak Struk" on an 80mm thermal printer gets the sidebar, the product
+ * grid and a sliver of receipt. Everything is hidden and only the receipt body is
+ * made visible again.
+ *
+ * Colours are also forced, not inherited: browsers drop backgrounds by default,
+ * and the receipt inherits its colours from the dark-mode theme, so a cashier with
+ * dark mode on would print near-white text on white paper.
+ */
+@media print {
+  @page {
+    size: 80mm auto;
+    margin: 0;
+  }
+
+  body {
+    background: #fff;
+  }
+
+  body * {
+    visibility: hidden !important;
+  }
+
+  [data-receipt-root],
+  [data-receipt-root] * {
+    visibility: visible !important;
+  }
+
+  [data-receipt-root] {
+    position: absolute;
+    inset: 0 auto auto 0;
+    width: 80mm;
+    max-width: 100%;
+    padding: 4mm;
+    border: 0 !important;
+    box-shadow: none !important;
+    background: #fff !important;
+    color: #000 !important;
+  }
+
+  [data-receipt-root] * {
+    color: #000 !important;
+    border-color: #999 !important;
+    background: transparent !important;
+  }
 }

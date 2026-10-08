@@ -24,16 +24,25 @@ import { z } from "zod";
  *    writes the status change, the ledger entries, and the stock increments
  *    together. If any line fails, nothing is applied — so a purchase can never be
  *    marked received while leaving stock partially updated.
- * 2. **A purchase price is snapshotted onto its line**, never written back to
- *    `Product.purchasePrice`. That column is the *current* cost; the line keeps
- *    what was actually paid, so historical COGS and margin reports stay correct
- *    after prices change.
+ * 2. **A purchase price is snapshotted onto its line.** That snapshot is what
+ *    history is measured against; `Product.purchasePrice` is only the *current*
+ *    cost and is rolled forward as a weighted average, so re-pricing a purchase
+ *    later never rewrites the margin of a sale that already happened.
  */
 
 export interface PurchaseLineInput {
   productId: string;
   quantity: number;
   purchasePrice: number;
+  /**
+   * Expiry date for a perishable line. Required when the product is marked
+   * `hasExpiry` — the batch record is what the expiry screens, the alerts and
+   * the write-off decision all read, so guessing it would put invented dates in
+   * front of the operator.
+   */
+  expiryDate?: Date | null;
+  /** Optional operator-supplied batch/lot code. Falls back to a derived one. */
+  batchNumber?: string | null;
 }
 
 export interface CreatePurchaseInput {
@@ -42,7 +51,6 @@ export interface CreatePurchaseInput {
   discount?: number;
   tax?: number;
   shippingCost?: number;
-  amountPaid?: number;
   notes?: string;
   lines: PurchaseLineInput[];
 }
@@ -62,17 +70,28 @@ export async function createPurchase(
   }
 
   for (const line of input.lines) {
-    if (!Number.isInteger(line.quantity) || line.quantity <= 0) {
+    if (
+      !Number.isInteger(line.quantity) ||
+      !Number.isFinite(line.quantity) ||
+      line.quantity <= 0
+    ) {
       throw new ValidationError(
         "Jumlah barang pada pembelian harus minimal 1.",
         "quantity",
       );
     }
 
-    if (line.purchasePrice < 0) {
+    if (!Number.isFinite(line.purchasePrice) || line.purchasePrice < 0) {
       throw new ValidationError(
         "Harga beli tidak boleh negatif.",
         "purchasePrice",
+      );
+    }
+
+    if (line.expiryDate && Number.isNaN(line.expiryDate.getTime())) {
+      throw new ValidationError(
+        "Tanggal kedaluwarsa tidak valid.",
+        "expiryDate",
       );
     }
   }
@@ -93,15 +112,26 @@ export async function createPurchase(
   }
 
   const totals = computePurchaseTotals(input.lines, input);
-  const amountPaid = Math.min(
-    Math.max(0, input.amountPaid ?? 0),
-    totals.grandTotal,
-  );
+
+  // Nothing is paid at DRAFT. `recordPurchasePayment` refuses a draft, so
+  // accepting money here would leave a purchase showing as paid for goods that
+  // have not arrived, with no way to correct it through the same path.
+  const amountPaid = 0;
+
+  // A discount larger than the goods leaves a purchase that can never be settled:
+  // the payment action requires a positive amount while the outstanding balance
+  // is zero. Refused at the door instead of created and then stuck.
+  if (totals.discount > totals.subtotal) {
+    throw new ValidationError(
+      "Diskon tidak boleh lebih besar dari nilai barang.",
+      "discount",
+    );
+  }
 
   // Verify every product exists before writing anything.
   const products = await prisma.product.findMany({
     where: { id: { in: input.lines.map((line) => line.productId) } },
-    select: { id: true, name: true },
+    select: { id: true, name: true, hasExpiry: true },
   });
 
   if (products.length !== new Set(input.lines.map((l) => l.productId)).size) {
@@ -111,6 +141,23 @@ export async function createPurchase(
   }
 
   const nameById = new Map(products.map((product) => [product.id, product.name]));
+
+  // A perishable line cannot be received without a real expiry date, and only
+  // the operator knows it. Demanding it now is what keeps the batches table —
+  // and every expiry alert and write-off decision derived from it — free of
+  // invented shelf lives.
+  const perishableIds = new Set(
+    products.filter((product) => product.hasExpiry).map((product) => product.id),
+  );
+
+  for (const line of input.lines) {
+    if (perishableIds.has(line.productId) && !line.expiryDate) {
+      throw new ValidationError(
+        `Tanggal kedaluwarsa wajib diisi untuk ${nameById.get(line.productId) ?? "produk perishable"}.`,
+        "expiryDate",
+      );
+    }
+  }
 
   // Reject duplicate products: two lines for one product would break the
   // ledger's one-row-per-change assumption and the COGS report.
@@ -147,6 +194,10 @@ export async function createPurchase(
               quantity: line.quantity,
               purchasePrice: line.purchasePrice,
               subtotal: line.quantity * line.purchasePrice,
+              // Carried onto the line so receipt can create the real batch,
+              // instead of inventing a shelf life at that point.
+              expiryDate: line.expiryDate ?? null,
+              batchNumber: line.batchNumber?.trim() || null,
             })),
           },
         },
@@ -182,6 +233,8 @@ export async function transitionPurchase(
               productId: true,
               quantity: true,
               purchasePrice: true,
+              expiryDate: true,
+              batchNumber: true,
               product: { select: { name: true } },
             },
           },
@@ -200,13 +253,27 @@ export async function transitionPurchase(
         );
       }
 
-      await tx.purchase.update({
-        where: { id: purchaseId },
+      // Claim the transition before anything else happens.
+      //
+      // `assertTransition` validated a status read a moment ago, and under READ
+      // COMMITTED that read can already be out of date: two clicks on "Terima"
+      // both see ORDERED, both pass, and both would run the stock increments
+      // below — turning a 100-unit receipt into a 200-unit one. Conditioning the
+      // write on the status we validated makes the loser match no rows and abort,
+      // so stock moves exactly once no matter how the request arrives.
+      const claimed = await tx.purchase.updateMany({
+        where: { id: purchaseId, status: purchase.status },
         data: {
           status: to,
           ...(statusAffectsStock(to) ? { receivedAt: new Date() } : {}),
         },
       });
+
+      if (claimed.count === 0) {
+        throw new BusinessRuleError(
+          "Status pembelian sudah diubah oleh pengguna lain. Muat ulang halaman.",
+        );
+      }
 
       if (!statusAffectsStock(to)) {
         return;
@@ -227,16 +294,51 @@ export async function transitionPurchase(
         })),
       );
 
-      // Update the product's current cost so future margin estimates use it.
-      // PurchaseItem keeps its own snapshot, so history is unaffected.
+      // Roll the product's current cost forward as a weighted average.
+      //
+      // Overwriting with the newest price would revalue every unit still on the
+      // shelf at the latest supplier price — receiving one expensive unit of a
+      // SKU would inflate the stock valuation of all the cheap ones. The average
+      // is what the remaining stock is actually worth, and `PurchaseItem` keeps
+      // its own snapshot so historical margins never move.
       for (const item of purchase.items) {
+        const current = await tx.product.findUnique({
+          where: { id: item.productId },
+          select: { purchasePrice: true, stock: true },
+        });
+
+        if (!current) continue;
+
+        const oldQty = Math.max(0, current.stock);
+        const newQty = oldQty + item.quantity;
+
+        if (newQty === 0) {
+          await tx.product.update({
+            where: { id: item.productId },
+            data: { purchasePrice: item.purchasePrice },
+          });
+
+          continue;
+        }
+
+        const weighted = new Prisma.Decimal(
+          (Number(current.purchasePrice) * oldQty +
+            Number(item.purchasePrice) * item.quantity) /
+            newQty,
+        );
+
         await tx.product.update({
           where: { id: item.productId },
-          data: { purchasePrice: item.purchasePrice },
+          data: { purchasePrice: weighted.toDecimalPlaces(2) },
         });
       }
 
-      // Optionally create expiry batches for perishable goods.
+      // Expiry batches for perishable goods.
+      //
+      // The date comes from the purchase line, not from a guess: a fabricated
+      // shelf life drives expiry alerts, the dashboard widget and the write-off
+      // decisions, so inventing one is worse than having none. A perishable line
+      // without a date is refused at creation instead.
       const perishables = await tx.product.findMany({
         where: {
           id: { in: purchase.items.map((item) => item.productId) },
@@ -250,7 +352,17 @@ export async function transitionPurchase(
       for (const item of purchase.items) {
         if (!perishableIds.has(item.productId)) continue;
 
-        const batchNumber = `${purchase.number}-${item.productId.slice(-4)}`;
+        const batchNumber =
+          item.batchNumber?.trim() ||
+          `${purchase.number}-${item.productId.slice(-4)}`;
+
+        const expiryDate = item.expiryDate;
+
+        if (!expiryDate) {
+          throw new BusinessRuleError(
+            `Barang perishable "${item.product.name}" harus memiliki tanggal kedaluwarsa. Perbarui pembelian sebelum menerimanya.`,
+          );
+        }
 
         await tx.productBatch.upsert({
           where: {
@@ -259,15 +371,11 @@ export async function transitionPurchase(
               batchNumber,
             },
           },
-          update: { quantity: { increment: item.quantity } },
+          update: { quantity: { increment: item.quantity }, expiryDate },
           create: {
             productId: item.productId,
             batchNumber,
-            // A conservative shelf life; operators adjust the real date from the
-            // Batch & Expiry screen once the packaging is checked.
-            expiryDate: new Date(
-              Date.now() + 90 * 24 * 60 * 60 * 1000,
-            ),
+            expiryDate,
             quantity: item.quantity,
             purchasePrice: item.purchasePrice,
           },
@@ -305,13 +413,26 @@ export async function recordPurchasePayment(
   const grandTotal = Number(purchase.grandTotal);
   const newPaid = Math.min(Number(purchase.amountPaid) + amount, grandTotal);
 
-  await prisma.purchase.update({
-    where: { id: purchaseId },
+  // Read, add, write — with the value we read as the condition of the write.
+  //
+  // Two payments recorded at the same moment both read the same `amountPaid` and
+  // would both write the same new total, so one of them would vanish while the
+  // audit log still claimed both were made: the store is short the difference and
+  // the purchase still reads PARTIAL. Comparing against the value we read turns
+  // that into a refusal the operator can retry.
+  const updated = await prisma.purchase.updateMany({
+    where: { id: purchaseId, amountPaid: purchase.amountPaid },
     data: {
       amountPaid: newPaid,
       paymentStatus: derivePaymentStatus(grandTotal, newPaid),
     },
   });
+
+  if (updated.count === 0) {
+    throw new BusinessRuleError(
+      "Pembayaran sudah diubah oleh pengguna lain. Muat ulang halaman dan coba lagi.",
+    );
+  }
 }
 
 /** Deletes a DRAFT purchase that was created by mistake. */
@@ -345,6 +466,8 @@ export interface SupplierInput {
   address?: string;
   contactPerson?: string;
   notes?: string;
+  /** Only honoured by `updateSupplier`: reactivates a deactivated supplier. */
+  isActive?: boolean;
 }
 
 export async function createSupplier(
@@ -380,7 +503,12 @@ async function nextSupplierCode(): Promise<string> {
     select: { code: true },
   });
 
-  const lastNumber = last ? Number(last.code.replace("SUP-", "")) : 0;
+  // `parseInt` rather than `Number`: an operator may type any code they like
+  // ("SUP-A"), and `Number("A")` is NaN, which would stringify into the literal
+  // code "SUP-NaN" and, being the highest-sorting row, wedge every later call to
+  // this function on a unique-constraint failure.
+  const parsed = last ? Number.parseInt(last.code.slice(4), 10) : 0;
+  const lastNumber = Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 
   return `SUP-${String(lastNumber + 1).padStart(3, "0")}`;
 }
@@ -409,6 +537,9 @@ export async function updateSupplier(
       address: input.address || null,
       contactPerson: input.contactPerson || null,
       notes: input.notes || null,
+      // Reactivating from the edit form. Deactivation used to be a one-way door:
+      // a supplier disabled by mistake could never be brought back, only deleted.
+      ...(input.isActive === undefined ? {} : { isActive: input.isActive }),
     },
   });
 }
@@ -417,28 +548,36 @@ export async function updateSupplier(
  * Deactivates rather than deletes a supplier.
  *
  * Historical purchases must keep resolving to a supplier name, so a supplier
- * with history is only ever deactivated.
+ * with history is only ever deactivated. Returns whether the row was actually
+ * removed, so the audit log can tell a deletion from a deactivation instead of
+ * recording both as the same event.
  */
-export async function deactivateSupplier(id: string): Promise<void> {
+export async function deactivateSupplier(
+  id: string,
+): Promise<"deleted" | "deactivated"> {
   const purchaseCount = await prisma.purchase.count({
     where: { supplierId: id },
   });
 
   if (purchaseCount === 0) {
     await prisma.supplier.delete({ where: { id } });
-    return;
+    return "deleted";
   }
 
   await prisma.supplier.update({
     where: { id },
     data: { isActive: false },
   });
+
+  return "deactivated";
 }
 
 export const purchaseLineSchema = z.object({
   productId: z.string().min(1),
-  quantity: z.coerce.number().int().min(1),
-  purchasePrice: z.coerce.number().min(0),
+  quantity: z.coerce.number().int().min(1).max(1_000_000),
+  purchasePrice: z.coerce.number().min(0).max(9_999_999_999),
+  expiryDate: z.coerce.date().optional(),
+  batchNumber: z.string().trim().max(60).optional(),
 });
 
 export type { PrismaNS, Prisma };

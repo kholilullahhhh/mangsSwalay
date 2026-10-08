@@ -9,6 +9,7 @@
 
 import "server-only";
 
+import type { TxClient } from "@/lib/db-client";
 import { prisma } from "@/lib/db";
 import { BusinessRuleError, ValidationError } from "@/lib/error";
 import { withDocumentNumber } from "@/lib/documents";
@@ -17,6 +18,23 @@ import {
   validateClosingCash,
   type ShiftComponents,
 } from "@/lib/shifts/rules";
+
+/** Model delegates the ledger read needs, so it can join a caller's transaction. */
+type ShiftLedgerClient = Pick<
+  TxClient,
+  "cashShift" | "sale" | "saleRefund" | "cashMovement"
+>;
+
+/**
+ * Sales that represent money in the drawer.
+ *
+ * A voided sale put nothing in and a fully refunded sale put nothing in and took
+ * everything back out, so neither belongs in cash-in. `PARTIALLY_REFUNDED` does:
+ * the sale still happened, it was only partly given back. The refund side then
+ * subtracts what went out, which is why the two lists have to match — using
+ * different sets here is what makes a refunded sale come out as negative cash.
+ */
+const DRAWER_SALE_STATUSES = ["COMPLETED", "PARTIALLY_REFUNDED"] as const;
 
 /** Only one shift may be open per user at a time. */
 export async function getOpenShift(userId: string) {
@@ -40,6 +58,7 @@ export async function getOpenShift(userId: string) {
 export async function openShift(
   userId: string,
   openingCash: number,
+  options: { client?: ShiftLedgerClient } = {},
 ): Promise<{ id: string; number: string }> {
   if (!Number.isInteger(openingCash) || openingCash < 0) {
     throw new ValidationError(
@@ -58,7 +77,26 @@ export async function openShift(
     );
   }
 
-  return prisma.$transaction(async (tx) => {
+  const run = async (tx: ShiftLedgerClient) => {
+    // Re-checked here, inside the transaction that opens the shift, and backed by
+    // a partial unique index on ("userId") WHERE status = 'OPEN'. The read above
+    // is only there to give a useful message: two requests racing past it both see
+    // "no shift", and only the database can settle which one gets to open the
+    // till. Leaving "the drawer" ambiguous is the exact thing this guard exists to
+    // prevent.
+    const stillOpen = await tx.cashShift.findFirst({
+      where: { userId, status: "OPEN" },
+      select: { number: true },
+    });
+
+    if (stillOpen) {
+      throw new BusinessRuleError(
+        "Anda masih memiliki shift terbuka (" +
+          stillOpen.number +
+          "). Tutup shift tersebut sebelum membuka yang baru.",
+      );
+    }
+
     return withDocumentNumber("SFT", new Date(), async (number) =>
       tx.cashShift.create({
         data: {
@@ -71,7 +109,27 @@ export async function openShift(
         select: { id: true, number: true },
       }),
     );
-  });
+  };
+
+  // `client` lets a caller open a shift inside its own transaction, so the till
+  // and whatever it belongs to commit or roll back together.
+  return options.client
+    ? run(options.client)
+    : prisma.$transaction(run, { timeout: 20_000, maxWait: 5_000 });
+}
+
+/**
+ * Turns a duplicate-shift rejection into the same message the pre-flight check
+ * gives, so racing requests produce one consistent explanation instead of a raw
+ * constraint violation surfaced as a server error.
+ */
+export function isOpenShiftConflict(error: unknown): boolean {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code: unknown }).code)
+      : "";
+
+  return code === "P2002";
 }
 
 /**
@@ -79,11 +137,15 @@ export async function openShift(
  *
  * Reads committed records rather than anything the caller supplies, so the
  * expected balance at close time cannot be influenced from the client.
+ *
+ * Accepts a transaction client so the close path can derive the stored expected
+ * cash and variance from the same consistent snapshot it writes them in.
  */
 export async function getShiftComponents(
   shiftId: string,
+  client: ShiftLedgerClient = prisma,
 ): Promise<ShiftComponents> {
-  const shift = await prisma.cashShift.findUnique({
+  const shift = await client.cashShift.findUnique({
     where: { id: shiftId },
     select: { openingCash: true },
   });
@@ -92,18 +154,29 @@ export async function getShiftComponents(
     throw new ValidationError("Shift tidak ditemukan.");
   }
 
-const [cashSales, cashRefunds, movements] = await Promise.all([
-    prisma.sale.aggregate({
-      where: { shiftId, paymentMethod: "CASH", status: "COMPLETED" },
-      _sum: { amountPaid: true },
+  const [cashSales, cashRefunds, movements] = await Promise.all([
+    client.sale.aggregate({
+      where: {
+        shiftId,
+        paymentMethod: "CASH",
+        status: { in: [...DRAWER_SALE_STATUSES] },
+      },
+      // `total`, not `amountPaid`: the drawer receives the cash handed over and
+      // immediately gives back the change, so what stays in the till is the
+      // amount of the sale. Summing `amountPaid` would count the change as money
+      // left in the drawer and manufacture a phantom shortfall at close.
+      _sum: { total: true },
     }),
     // A refund only leaves the drawer if the original sale was paid in cash;
-    // refunding a QRIS purchase moves money outside the till.
-    prisma.saleRefund.aggregate({
+    // refunding a QRIS purchase moves money outside the till. The sale's status
+    // is deliberately not filtered: whatever came in has already been counted by
+    // the aggregate above or excluded with it, and filtering here would subtract
+    // the same refund from a sale that was never added.
+    client.saleRefund.aggregate({
       where: { sale: { shiftId, paymentMethod: "CASH" } },
       _sum: { totalRefund: true },
     }),
-    prisma.cashMovement.groupBy({
+    client.cashMovement.groupBy({
       by: ["type"],
       where: { shiftId },
       _sum: { amount: true },
@@ -117,7 +190,7 @@ const [cashSales, cashRefunds, movements] = await Promise.all([
 
   return {
     openingCash: Number(shift.openingCash),
-    cashSales: Number(cashSales._sum.amountPaid ?? 0),
+    cashSales: Number(cashSales._sum.total ?? 0),
     cashRefunds: Number(cashRefunds._sum.totalRefund ?? 0),
     cashIn: Number(cashIn),
     cashOut: Number(cashOut),
@@ -176,6 +249,7 @@ export async function closeShift(
   userId: string,
   actualCash: number,
   notes?: string,
+  options: { client?: ShiftLedgerClient } = {},
 ): Promise<{
   expected: number;
   actual: number;
@@ -188,8 +262,7 @@ export async function closeShift(
     throw new ValidationError(validation.error ?? "Jumlah kas tidak valid.", "actualCash");
   }
 
-  return prisma.$transaction(
-    async (tx) => {
+  const run = async (tx: ShiftLedgerClient) => {
       const shift = await tx.cashShift.findFirst({
         where: { id: shiftId, userId },
         select: { id: true, status: true },
@@ -203,7 +276,7 @@ export async function closeShift(
         throw new BusinessRuleError("Shift ini sudah ditutup.");
       }
 
-      const components = await getShiftComponents(shiftId);
+const components = await getShiftComponents(shiftId, tx);
       const result = calculateVariance(components, actualCash);
 
       // A variance that is not explained is a control failure: the note is
@@ -220,8 +293,12 @@ export async function closeShift(
         .filter(Boolean)
         .join(" ");
 
-      await tx.cashShift.update({
-        where: { id: shiftId },
+      // The status is the condition of the write, so a second close submitted at
+      // the same moment matches nothing and is refused. Reading the status and
+      // then writing it unconditionally would let two closes both succeed, with
+      // the second silently overwriting the first one's counted cash.
+      const closed = await tx.cashShift.updateMany({
+        where: { id: shiftId, userId, status: "OPEN" },
         data: {
           status: "CLOSED",
           closedAt: new Date(),
@@ -232,15 +309,25 @@ export async function closeShift(
         },
       });
 
-      return {
+      if (closed.count === 0) {
+        throw new BusinessRuleError(
+          "Shift ini sudah ditutup oleh proses lain. Muat ulang halaman.",
+        );
+      }
+
+return {
         expected: result.expected,
         actual: result.actual,
         variance: result.variance,
         direction: result.direction,
       };
-    },
-    { timeout: 20_000, maxWait: 5_000 },
-  );
+  };
+
+  // As with `openShift`: a caller can supply its own client so the reconciliation
+  // commits with whatever it is reconciling.
+  return options.client
+    ? run(options.client)
+    : prisma.$transaction(run, { timeout: 20_000, maxWait: 5_000 });
 }
 
 export interface ShiftRow {
@@ -263,13 +350,17 @@ export async function listShifts(options: {
   page?: string;
   perPage?: string;
   take?: number;
+  skip?: number;
 }): Promise<{ rows: ShiftRow[]; total: number }> {
   const where = options.userId ? { userId: options.userId } : {};
 
   const [rows, total] = await Promise.all([
     prisma.cashShift.findMany({
       where,
-      take: options.take ?? 50,
+      // `skip` is what makes the history reachable beyond the first page — a
+      // hard cap with no way past it silently hides every shift after the 50th.
+      take: options.take ?? 20,
+      ...(options.skip ? { skip: options.skip } : {}),
       orderBy: { openedAt: "desc" },
       select: {
         id: true,
@@ -282,7 +373,7 @@ export async function listShifts(options: {
         expectedCash: true,
         variance: true,
         user: { select: { name: true } },
-        _count: { select: { sales: true } },
+        _count: { select: { sales: { where: { status: { not: "VOID" } } } } },
       },
     }),
     prisma.cashShift.count({ where }),

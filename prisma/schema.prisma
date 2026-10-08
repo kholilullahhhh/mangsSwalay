@@ -170,6 +170,12 @@ model User {
   phone        String?
   isActive     Boolean   @default(true)
   lastLoginAt  DateTime?
+  // Shared brute-force protection. The in-memory limiter is per-instance and is
+  // defeated by a rotating X-Forwarded-For; these two columns are the
+  // authoritative counter, stored on the row so every serverless instance sees
+  // the same count.
+  failedAttempts Int       @default(0)
+  lockedUntil     DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
@@ -434,6 +440,11 @@ model PurchaseItem {
   // so historical cost is not overwritten by future price changes.
   purchasePrice Decimal @db.Decimal(15, 2)
   subtotal  Decimal @db.Decimal(15, 2)
+  // Expiry captured at ordering time, carried onto the batch created on
+  // receipt. Kept here rather than invented at receipt, because the operator
+  // reads the date off the packaging and every expiry screen is derived from it.
+  expiryDate DateTime?
+  batchNumber String?
 
   purchase Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
   product  Product  @relation(fields: [productId], references: [id])
@@ -461,7 +472,11 @@ model Sale {
   amountPaid    Decimal        @db.Decimal(15, 2)
   change        Decimal        @db.Decimal(15, 2) @default(0)
   status        SaleStatus     @default(COMPLETED)
-  pointsEarned  Int            @default(0)
+pointsEarned Int @default(0)
+  // Points spent on this sale. Recorded so a refund can give them back: without
+  // it, returning goods bought with points leaves the member with the goods' cash
+  // value *and* the points they paid for.
+  pointsRedeemed Int @default(0)
   // Code of the promotion applied at checkout, for reporting and usage limits.
   promotionCode String?
   notes         String?

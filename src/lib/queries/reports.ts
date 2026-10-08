@@ -90,7 +90,10 @@ export interface SalesReport {
   discounts: number;
   taxes: number;
   refunds: number;
+  /** Gross less refunds and tax — the money the store actually earned. */
   netSales: number;
+  /** Gross less refunds, still including tax. Kept for reconciliation. */
+  netSalesInclTax: number;
   transactions: number;
   averageTransaction: number;
   itemsSold: number;
@@ -149,17 +152,20 @@ export async function getSalesReport(range: ReportRange): Promise<SalesReport> {
   const itemsSold = Number(items[0]?.itemsSold ?? 0);
   const costOfGoods = Number(items[0]?.costOfGoods ?? 0);
 
-  const netSales = grossSales - refundedAmount;
+const netSalesInclTax = grossSales - refundedAmount;
   // Tax is collected on behalf of the government, so it is excluded from both
-  // revenue and profit; including it would overstate earnings.
-  const profitBase = grossSales - refundedAmount - taxes;
+  // revenue and profit; including it would overstate earnings. "Omzet bersih"
+  // has to mean the same thing everywhere, so this is the figure the tile shows.
+  const netSales = netSalesInclTax - taxes;
+  const profitBase = netSales;
 
   return {
     grossSales,
     discounts,
     taxes,
-    refunds: refundedAmount,
+refunds: refundedAmount,
     netSales,
+    netSalesInclTax,
     transactions,
     averageTransaction: transactions > 0 ? Math.round(netSales / transactions) : 0,
     itemsSold,
@@ -517,51 +523,68 @@ export interface CashFlowPoint {
  * are not tracked per payment, so a paid order shows its whole payment on the
  * order date — an approximation, but a consistent one that cannot silently
  * erase a large supplier bill from the report.
+ *
+ * Cash movements recorded against a shift (petty cash in and out) are included:
+ * they are the same money this page is meant to account for, and leaving them out
+ * would make the cash-flow view disagree with the shift it is drawn from.
  */
 export async function getCashFlow(range: ReportRange): Promise<CashFlowPoint[]> {
-  const [cashSales, cashRefunds, expenses, purchases] = await Promise.all([
-    prisma.$queryRaw<Array<{ day: Date; total: unknown }>>`
-      SELECT
-        date_trunc('day', s."date" AT TIME ZONE ${STORE_TIME_ZONE}) AS day,
-        COALESCE(SUM(s."amountPaid"), 0) AS total
-      FROM "Sale" s
-      WHERE s."date" >= ${range.from}
-        AND s."date" < ${range.to}
-        AND s.status IN ${Prisma.raw(REVENUE_STATUSES)}
-        AND s."paymentMethod" = 'CASH'
-      GROUP BY 1
-    `,
-    prisma.$queryRaw<Array<{ day: Date; total: unknown }>>`
-      SELECT
-        date_trunc('day', r.date AT TIME ZONE ${STORE_TIME_ZONE}) AS day,
-        COALESCE(SUM(r."totalRefund"), 0) AS total
-      FROM "SaleRefund" r
-      WHERE r.date >= ${range.from}
-        AND r.date < ${range.to}
-        AND r."paymentMethod" = 'CASH'
-      GROUP BY 1
-    `,
-    prisma.$queryRaw<Array<{ day: Date; total: unknown }>>`
-      SELECT
-        date_trunc('day', e.date AT TIME ZONE ${STORE_TIME_ZONE}) AS day,
-        COALESCE(SUM(e.amount), 0) AS total
-      FROM "Expense" e
-      WHERE e.date >= ${range.from} AND e.date < ${range.to}
-      GROUP BY 1
-    `,
-    prisma.$queryRaw<Array<{ day: Date; total: unknown }>>`
-      SELECT
-        date_trunc('day', p.date AT TIME ZONE ${STORE_TIME_ZONE}) AS day,
-        COALESCE(SUM(p."amountPaid"), 0) AS total
-      FROM "Purchase" p
-      WHERE p.date >= ${range.from}
-        AND p.date < ${range.to}
-        AND p.status IN ('RECEIVED', 'COMPLETED')
-      GROUP BY 1
-    `,
-  ]);
+  const [cashSales, cashRefunds, expenses, purchases, movements] =
+    await Promise.all([
+      // `amountPaid - change`, which for a cash sale is exactly `total`: the
+      // drawer takes the note handed over and gives the change straight back.
+      // Summing `amountPaid` alone would book change as cash retained.
+      prisma.$queryRaw<Array<{ day: string; total: unknown }>>`
+        SELECT
+          (date_trunc('day', s."date" AT TIME ZONE ${STORE_TIME_ZONE}))::date::text AS day,
+          COALESCE(SUM(s."amountPaid" - s."change"), 0) AS total
+        FROM "Sale" s
+        WHERE s."date" >= ${range.from}
+          AND s."date" < ${range.to}
+          AND s.status IN ${Prisma.raw(REVENUE_STATUSES)}
+          AND s."paymentMethod" = 'CASH'
+        GROUP BY 1
+      `,
+      prisma.$queryRaw<Array<{ day: string; total: unknown }>>`
+        SELECT
+          (date_trunc('day', r.date AT TIME ZONE ${STORE_TIME_ZONE}))::date::text AS day,
+          COALESCE(SUM(r."totalRefund"), 0) AS total
+        FROM "SaleRefund" r
+        WHERE r.date >= ${range.from}
+          AND r.date < ${range.to}
+          AND r."paymentMethod" = 'CASH'
+        GROUP BY 1
+      `,
+      prisma.$queryRaw<Array<{ day: string; total: unknown }>>`
+        SELECT
+          (date_trunc('day', e.date AT TIME ZONE ${STORE_TIME_ZONE}))::date::text AS day,
+          COALESCE(SUM(e.amount), 0) AS total
+        FROM "Expense" e
+        WHERE e.date >= ${range.from} AND e.date < ${range.to}
+        GROUP BY 1
+      `,
+      prisma.$queryRaw<Array<{ day: string; total: unknown }>>`
+        SELECT
+          (date_trunc('day', p.date AT TIME ZONE ${STORE_TIME_ZONE}))::date::text AS day,
+          COALESCE(SUM(p."amountPaid"), 0) AS total
+        FROM "Purchase" p
+        WHERE p.date >= ${range.from}
+          AND p.date < ${range.to}
+          AND p.status IN ('RECEIVED', 'COMPLETED')
+        GROUP BY 1
+      `,
+      prisma.$queryRaw<Array<{ day: string; inflow: unknown; outflow: unknown }>>`
+        SELECT
+          (date_trunc('day', m."createdAt" AT TIME ZONE ${STORE_TIME_ZONE}))::date::text AS day,
+          COALESCE(SUM(m.amount) FILTER (WHERE m.type = 'CASH_IN'), 0) AS inflow,
+          COALESCE(SUM(m.amount) FILTER (WHERE m.type = 'CASH_OUT'), 0) AS outflow
+        FROM "CashMovement" m
+        WHERE m."createdAt" >= ${range.from}
+          AND m."createdAt" < ${range.to}
+        GROUP BY 1
+      `,
+    ]);
 
-  const dayKey = (day: Date) => day.toISOString().slice(0, 10);
   const inflowMap = new Map<string, number>();
   const outflowMap = new Map<string, number>();
 
@@ -569,10 +592,14 @@ export async function getCashFlow(range: ReportRange): Promise<CashFlowPoint[]> 
     map.set(key, (map.get(key) ?? 0) + amount);
   };
 
-  for (const row of cashSales) add(inflowMap, dayKey(row.day), Number(row.total));
-  for (const row of cashRefunds) add(outflowMap, dayKey(row.day), Number(row.total));
-  for (const row of expenses) add(outflowMap, dayKey(row.day), Number(row.total));
-  for (const row of purchases) add(outflowMap, dayKey(row.day), Number(row.total));
+  for (const row of cashSales) add(inflowMap, row.day, Number(row.total));
+  for (const row of cashRefunds) add(outflowMap, row.day, Number(row.total));
+  for (const row of expenses) add(outflowMap, row.day, Number(row.total));
+  for (const row of purchases) add(outflowMap, row.day, Number(row.total));
+  for (const row of movements) {
+    add(inflowMap, row.day, Number(row.inflow));
+    add(outflowMap, row.day, Number(row.outflow));
+  }
 
   const keys = new Set([...inflowMap.keys(), ...outflowMap.keys()]);
   const formatter = new Intl.DateTimeFormat("id-ID", {

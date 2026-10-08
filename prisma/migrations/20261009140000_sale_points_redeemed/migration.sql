@@ -1,0 +1,11 @@
+-- Loyalty redemption.
+--
+-- Points were earn-only. `pointsToValue` existed in the cart maths,
+-- `loyalty.pointValue` was editable on the settings screen and read by nothing,
+-- and no code path anywhere reduced a member's balance — so "loyalty" meant an
+-- integer that only ever grew.
+--
+-- Recording the spend on the sale is what makes redemption reversible: a refund
+-- has to know how many points the customer handed over, or returning goods bought
+-- with points leaves the member with both the cash value and the points.
+ALTER TABLE "Sale" ADD COLUMN "pointsRedeemed" INTEGER NOT NULL DEFAULT 0;

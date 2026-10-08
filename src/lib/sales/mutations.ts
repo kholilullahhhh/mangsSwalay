@@ -1,4 +1,4 @@
-import "server-only";
+﻿import "server-only";
 
 import type { TxClient } from "@/lib/db-client";
 
@@ -7,7 +7,7 @@ import type { TxClient } from "@/lib/db-client";
  *
  * Narrower than the whole transaction so both can be handed a caller's client and
  * join their transaction instead of opening one of their own. A refund issued
- * inside another operation has to commit or roll back with it — a nested
+ * inside another operation has to commit or roll back with it â€” a nested
  * transaction that commits on its own is worse than no transaction at all,
  * because it looks atomic and is not.
  */
@@ -19,6 +19,8 @@ export type SaleClient = Pick<
   | "saleRefundItem"
   | "customer"
   | "product"
+  | "productBatch"
+  | "promotion"
   | "storeSetting"
   | "inventoryMovement"
 >;
@@ -28,6 +30,7 @@ import { BusinessRuleError, ValidationError } from "@/lib/error";
 import { withDocumentNumber } from "@/lib/documents";
 import { applyStockChanges } from "@/lib/inventory/stock";
 import {
+  allocateProportionally,
   canRefund,
   canVoid,
   planRefund,
@@ -86,7 +89,9 @@ async function runVoid(
           invoiceNumber: true,
           status: true,
           pointsEarned: true,
+          pointsRedeemed: true,
           customerId: true,
+          promotionCode: true,
           items: { select: { productId: true, quantity: true } },
           _count: { select: { refunds: true } },
         },
@@ -107,6 +112,28 @@ async function runVoid(
         );
       }
 
+      // Claim the sale before touching anything else.
+      //
+      // The read above is a plain SELECT, so two voids fired at the same moment
+      // (a double-click, two tabs, a retried request) would both see COMPLETED
+      // and both go on to return the stock. Making the status itself the
+      // condition of the write turns that race into a no-op for the loser, which
+      // is the only guarantee that stock is returned exactly once.
+      const claimed = await tx.sale.updateMany({
+        where: { id: saleId, status: sale.status },
+        data: {
+          status: "VOID",
+          voidedAt: new Date(),
+          voidReason: reason.trim(),
+        },
+      });
+
+      if (claimed.count === 0) {
+        throw new BusinessRuleError(
+          "Transaksi sudah dibatalkan oleh pengguna lain.",
+        );
+      }
+
       // Release stock. Void uses its own movement type so these units are
       // distinguishable from a genuine return in the ledger.
       await applyStockChanges(
@@ -123,26 +150,49 @@ async function runVoid(
         })),
       );
 
-      await tx.sale.update({
-        where: { id: saleId },
-        data: {
-          status: "VOID",
-          voidedAt: new Date(),
-          voidReason: reason.trim(),
-        },
-      });
+      // Loyalty granted by a voided sale must be withdrawn, otherwise a
+      // customer could void repeatedly and farm points for free.
+      //
+      // `totalPurchases` is undone for every attributed sale, not only the ones
+      // that earned points: checkout increments it for any customer, member or
+      // not, so gating the reversal on `pointsEarned > 0` would leave the count
+      // permanently inflated for non-members.
+      if (sale.customerId) {
+        await tx.customer.update({
+          where: { id: sale.customerId },
+          data: {
+            // Points spent are returned too — the sale never happened.
+            ...(pointsEarnedNet(sale.pointsRedeemed, sale.pointsEarned) !== 0
+              ? {
+                  points: {
+                    increment: pointsEarnedNet(
+                      sale.pointsRedeemed,
+                      sale.pointsEarned,
+                    ),
+                  },
+                }
+              : {}),
+            totalPurchases: { decrement: 1 },
+          },
+        });
+      }
 
-// Loyalty points granted by a voided sale must be withdrawn, otherwise a
-  // customer could void repeatedly and farm points for free.
-  if (sale.customerId && sale.pointsEarned > 0) {
-    await tx.customer.update({
-      where: { id: sale.customerId },
-      data: {
-        points: { decrement: sale.pointsEarned },
-        totalPurchases: { decrement: 1 },
-      },
-    });
-  }
+      // Give a capped promotion's use back. Checkout consumes one, so voiding
+      // the sale that used the last available slot would otherwise burn it
+      // permanently.
+      if (sale.promotionCode) {
+        const promotion = await tx.promotion.findUnique({
+          where: { code: sale.promotionCode },
+          select: { id: true, usageLimit: true },
+        });
+
+        if (promotion && promotion.usageLimit !== null) {
+          await tx.promotion.updateMany({
+            where: { id: promotion.id, usedCount: { gt: 0 } },
+            data: { usedCount: { decrement: 1 } },
+          });
+        }
+      }
   }
 }
 
@@ -193,7 +243,12 @@ async function runRefund(
           status: true,
           paymentMethod: true,
           customerId: true,
-items: {
+          subtotal: true,
+          total: true,
+          pointsEarned: true,
+          pointsRedeemed: true,
+          promotionCode: true,
+          items: {
             select: {
               id: true,
               productId: true,
@@ -213,15 +268,26 @@ items: {
 
       const status = sale.status as SaleState;
 
-const refundable = sale.items.map((item) => ({
+      // A line's own subtotal is what the item was priced at before the
+      // order-level discount and tax were applied, so refunding from it would
+      // hand back more than the customer ever paid. Each line instead receives
+      // its share of `Sale.total` â€” the money actually collected â€” and those
+      // shares sum to that total exactly.
+      const paidTotal = Number(sale.total);
+      const shares = allocateProportionally(
+        paidTotal,
+        sale.items.map((item) => Number(item.subtotal)),
+      );
+
+      const refundable = sale.items.map((item, index) => ({
         saleItemId: item.id,
         productId: item.productId,
         name: item.product.name,
         quantity: item.quantity,
         returnedQty: item.returnedQty,
-        subtotal: Number(item.subtotal),
+        subtotal: shares[index],
         // Sum of what earlier refunds already paid on this line, so the
-        // remainder logic can guarantee the refunds sum to the subtotal.
+        // remainder logic can guarantee the refunds sum to the share.
         refundedAmount: Number(
           item.refundItems.reduce((sum, entry) => sum + Number(entry.amount), 0),
         ),
@@ -241,8 +307,35 @@ const refundable = sale.items.map((item) => ({
         throw new BusinessRuleError(plan.errors[0]);
       }
 
-      if (plan.totalRefund <= 0) {
+      // A sale that was written down to zero collected nothing, so a return of
+      // the goods is worth Rp 0. That is still a real return â€” the stock must go
+      // back and the status must advance â€” so the value check only applies when
+      // the customer actually paid something.
+      if (plan.totalRefund <= 0 && paidTotal > 0) {
         throw new BusinessRuleError("Nilai retur tidak boleh nol.");
+      }
+
+      // Claim each line's remaining quantity before writing anything.
+      //
+      // The availability check above reads a READ COMMITTED snapshot, so two
+      // refunds submitted together both see the same `returnedQty` and both
+      // believe the units are free. Making the write itself refuse to take more
+      // than is left means the loser aborts instead of refunding the same units
+      // twice.
+      for (const line of plan.lines) {
+        const claimed = await tx.saleItem.updateMany({
+          where: {
+            id: line.saleItemId,
+            returnedQty: { lte: remainingOf(refundable, line.saleItemId) },
+          },
+          data: { returnedQty: { increment: line.quantity } },
+        });
+
+        if (claimed.count === 0) {
+          throw new BusinessRuleError(
+            `${line.name} sudah diretur oleh transaksi lain. Muat ulang halaman.`,
+          );
+        }
       }
 
       const refund = await withDocumentNumber(
@@ -271,14 +364,6 @@ const refundable = sale.items.map((item) => ({
           }),
       );
 
-      // Track how much of each line has been returned.
-      for (const line of plan.lines) {
-        await tx.saleItem.update({
-          where: { id: line.saleItemId },
-          data: { returnedQty: { increment: line.quantity } },
-        });
-      }
-
       // Only good-condition items re-enter sellable stock.
       if (plan.restockLines.length > 0) {
         await applyStockChanges(
@@ -296,10 +381,74 @@ const refundable = sale.items.map((item) => ({
         );
       }
 
-await tx.sale.update({
+      // Damaged units are not sellable again, but they still left the shelf, so
+      // the shrinkage is written to the ledger. Without this the stock counter
+      // silently drops with no movement row explaining where the units went.
+      for (const line of plan.damagedLines) {
+        await tx.inventoryMovement.create({
+          data: {
+            productId: line.productId,
+            type: "DAMAGED",
+            quantity: line.quantity,
+            previousStock: 0,
+            newStock: 0,
+            referenceType: "SaleRefund",
+            referenceId: refund.id,
+            userId,
+            note: `Retur rusak dari ${sale.invoiceNumber} (tidak dikembalikan ke stok)`,
+          },
+        });
+      }
+
+      await tx.sale.update({
         where: { id: saleId },
         data: { status: plan.newStatus },
       });
+
+      // Loyalty is earned on the sale, so it is given back with the goods.
+      // Without this a member could buy, return, and keep the points.
+      // Loyalty is earned on the sale, so it is given back with the goods.
+      // Without this a member could buy, return, and keep the points.
+      if (sale.customerId && paidTotal > 0) {
+        const ratio = Math.min(1, plan.totalRefund / paidTotal);
+        const isFull = plan.newStatus === "REFUNDED";
+
+        const pointsBack = isFull
+          ? sale.pointsEarned
+          : Math.round(sale.pointsEarned * ratio);
+
+        // Points spent on the sale come back too, or the customer keeps the value
+        // of the goods *and* the points they paid for them.
+        const pointsReturned = isFull
+          ? sale.pointsRedeemed
+          : Math.round(sale.pointsRedeemed * ratio);
+
+        // Net change rather than a decrement/increment pair, so the common case —
+        // one of the two being zero — is a plain assignment the database accepts.
+        const pointsDelta = pointsEarnedNet(pointsReturned, pointsBack);
+
+        await tx.customer.update({
+          where: { id: sale.customerId },
+          data: {
+            ...(pointsDelta !== 0 ? { points: { increment: pointsDelta } } : {}),
+            ...(isFull ? { totalPurchases: { decrement: 1 } } : {}),
+          },
+        });
+      }
+
+      if (sale.promotionCode) {
+        const promotion = await tx.promotion.findUnique({
+          where: { code: sale.promotionCode },
+          select: { id: true, usageLimit: true },
+        });
+
+        if (promotion && promotion.usageLimit !== null) {
+          await tx.promotion.updateMany({
+            where: { id: promotion.id, usedCount: { gt: 0 } },
+            data: { usedCount: { decrement: 1 } },
+          });
+        }
+      }
 
       return {
         refundNumber: refund.number,
@@ -312,15 +461,30 @@ await tx.sale.update({
   }
 }
 
+/** Net change to a member's balance: points given back, less points withdrawn. */
+function pointsEarnedNet(pointsReturned: number, pointsWithdrawn: number): number {
+  return pointsReturned - pointsWithdrawn;
+}
+
+/** Units of a sale line that were still returnable when the plan was built. */
+function remainingOf(
+  items: Array<{ saleItemId: string; quantity: number; returnedQty: number }>,
+  saleItemId: string,
+): number {
+  const item = items.find((entry) => entry.saleItemId === saleItemId);
+  return item ? item.quantity - item.returnedQty : 0;
+}
+
 /** A sale with its lines and refund history, for the detail view. */
 export async function getSaleById(id: string) {
   return prisma.sale.findUnique({
     where: { id },
-    select: {
+select: {
       id: true,
       invoiceNumber: true,
       date: true,
       status: true,
+      userId: true,
       subtotal: true,
       discount: true,
       tax: true,

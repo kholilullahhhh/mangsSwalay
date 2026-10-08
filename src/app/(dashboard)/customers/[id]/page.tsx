@@ -3,7 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, Coins, Phone } from "lucide-react";
 
-import { requirePagePermission } from "@/lib/auth/session";
+import { requirePagePermission, hasPermission } from "@/lib/auth/session";
 import { getCustomerById } from "@/lib/queries/catalog";
 import {
   SALE_STATUS_LABEL,
@@ -27,6 +27,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { EmptyState } from "@/components/data/empty-state";
+import { CustomerDialog } from "../new-customer-button";
 
 export const metadata: Metadata = {
   title: "Detail Pelanggan",
@@ -38,6 +39,8 @@ export default async function CustomerDetailPage({
   params: Promise<{ id: string }>;
 }) {
   await requirePagePermission("customers:view");
+
+const canManage = await hasPermission("customers:manage");
 
   const { id } = await params;
   const data = await getCustomerById(id);
@@ -60,13 +63,32 @@ export default async function CustomerDetailPage({
           Kembali ke pelanggan
         </Link>
 
-        <h1 className="mt-1 flex flex-wrap items-center gap-2 text-lg font-semibold tracking-tight">
-          {customer.name}
-          {customer.isMember ? (
-            <Badge variant="secondary">{customer.memberNumber}</Badge>
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+          <h1 className="flex flex-wrap items-center gap-2 text-lg font-semibold tracking-tight">
+            {customer.name}
+            {customer.isMember ? (
+              <Badge variant="secondary">{customer.memberNumber}</Badge>
+            ) : null}
+            {!customer.isActive ? (
+              <Badge variant="destructive">Nonaktif</Badge>
+            ) : null}
+          </h1>
+
+          {canManage ? (
+            <CustomerDialog
+              customer={{
+                id: customer.id,
+                name: customer.name,
+                phone: customer.phone,
+                email: customer.email,
+                address: customer.address,
+                notes: customer.notes,
+                isMember: customer.isMember,
+                isActive: customer.isActive,
+              }}
+            />
           ) : null}
-          {!customer.isActive ? <Badge variant="destructive">Nonaktif</Badge> : null}
-        </h1>
+        </div>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

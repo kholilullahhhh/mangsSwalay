@@ -227,6 +227,14 @@ export function evaluatePromotion(
     if (threshold <= 0) return reject("INVALID_CONFIGURATION");
     if (cartSubtotal < threshold) return reject("BELOW_MINIMUM");
 
+    // Same bound as PERCENTAGE: `value` is a fraction here, so anything above 1
+    // is a rupiah figure typed into a percentage field. Without this it becomes a
+    // 100%-off (or worse) verdict that silently zeroes the basket, and checkout
+    // then refuses the sale as a zero total with no clue why.
+    if (promotion.value <= 0 || promotion.value > 1) {
+      return reject("INVALID_CONFIGURATION");
+    }
+
     // `value` arrives as a fraction (0.15 = 15%), so it is applied directly.
     const discount = Math.round(promotion.value * cartSubtotal);
 

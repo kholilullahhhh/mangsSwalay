@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 
-import { ApprovalActions, OpnameCounter } from "./counter";
+import { ApprovalActions, CancelOpnameAction, OpnameCounter } from "./counter";
 
 export const metadata: Metadata = {
   title: "Hitung Stok",
@@ -63,8 +63,17 @@ export default async function OpnameDetailPage({
           </Badge>
         </h1>
 
-        <p className="text-sm text-muted-foreground">
+<p className="text-sm text-muted-foreground">
           Dibuat oleh {opname.user.name} pada {formatDateTime(opname.createdAt)}
+        {opname.approvedAt ? (
+          <>
+            {" · Disetujui oleh "}
+            <span className="font-medium text-foreground">
+              {opname.approver?.name ?? "tidak diketahui"}
+            </span>{" "}
+            pada {formatDateTime(opname.approvedAt)}
+          </>
+        ) : null}
         </p>
       </div>
 
@@ -99,17 +108,25 @@ export default async function OpnameDetailPage({
             </p>
           </div>
 
-          {isOpen && canApprove ? <ApprovalActions opnameId={opname.id} /> : null}
+{isOpen && canApprove ? <ApprovalActions opnameId={opname.id} /> : null}
+          {isOpen && canCount ? (
+            <div className="flex items-center gap-2">
+              <CancelOpnameAction opnameId={opname.id} />
+            </div>
+          ) : null}
         </div>
 
         <Progress value={summary.progress} className="mt-3 h-2" />
       </div>
 
-      <OpnameCounter
+<OpnameCounter
         opnameId={opname.id}
         readOnly={!isOpen || !canCount}
-lines={summary.lines.map((line, index) => {
-          const source = opname.items[index];
+        lines={summary.lines.map((line) => {
+          const source = opname.items.find(
+            (item) => item.productId === line.productId,
+          );
+
           return {
             productId: line.productId,
             name: line.productName,
@@ -119,6 +136,11 @@ lines={summary.lines.map((line, index) => {
             physicalStock: line.physicalStock,
             difference: line.difference,
             valueDifference: line.valueDifference,
+            unitCost:
+              source?.purchasePriceSnapshot === null ||
+              source?.purchasePriceSnapshot === undefined
+                ? 0
+                : Number(source.purchasePriceSnapshot),
             status: line.status,
           };
         })}

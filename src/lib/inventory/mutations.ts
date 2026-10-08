@@ -248,6 +248,7 @@ export async function recordOpnameCount(
   opnameId: string,
   productId: string,
   physicalStock: number,
+  note?: string,
 ): Promise<void> {
   if (!Number.isInteger(physicalStock) || physicalStock < 0) {
     throw new ValidationError(
@@ -256,37 +257,43 @@ export async function recordOpnameCount(
     );
   }
 
-  const item = await prisma.stockOpnameItem.findUnique({
-    where: { opnameId_productId: { opnameId, productId } },
-    select: { id: true },
+  // The write is conditioned on the session still being open rather than checking
+  // it first and writing afterwards. Reading the status in one statement and
+  // writing in another leaves a window in which an approval can commit in
+  // between, and the count would land inside an already-reconciled session —
+  // rewriting the frozen record the review screen promises is read-only.
+  const updated = await prisma.stockOpnameItem.updateMany({
+    where: {
+      opnameId,
+      productId,
+      opname: { status: "IN_PROGRESS" },
+    },
+    data: {
+      physicalStock,
+      ...(note?.trim() ? { note: note.trim().slice(0, 200) } : {}),
+    },
   });
 
-  if (!item) {
+  if (updated.count === 0) {
+    const opname = await prisma.stockOpname.findUnique({
+      where: { id: opnameId },
+      select: { status: true },
+    });
+
+    if (!opname) {
+      throw new ValidationError("Sesi opname tidak ditemukan.");
+    }
+
+    if (opname.status !== "IN_PROGRESS") {
+      throw new BusinessRuleError(
+        "Sesi opname sudah tidak aktif, hitungan tidak bisa diubah.",
+      );
+    }
+
     throw new ValidationError(
       "Produk ini bukan bagian dari sesi opname tersebut.",
     );
   }
-
-  const opname = await prisma.stockOpname.findUnique({
-    where: { id: opnameId },
-    select: { status: true },
-  });
-
-  if (!opname) {
-    throw new ValidationError("Sesi opname tidak ditemukan.");
-  }
-
-  // Counting is only meaningful while the session is open.
-  if (opname.status !== "IN_PROGRESS") {
-    throw new BusinessRuleError(
-      "Sesi opname sudah tidak aktif, hitungan tidak bisa diubah.",
-    );
-  }
-
-  await prisma.stockOpnameItem.update({
-    where: { id: item.id },
-    data: { physicalStock },
-  });
 }
 
 /** Summary of an opname session, for the review screen. */
@@ -350,12 +357,13 @@ export async function approveOpname(
 ): Promise<{ adjusted: number }> {
   return prisma.$transaction(
     async (tx) => {
-      const opname = await tx.stockOpname.findUnique({
+const opname = await tx.stockOpname.findUnique({
         where: { id: opnameId },
         select: {
           id: true,
           number: true,
           status: true,
+          userId: true,
           items: {
             select: {
               productId: true,
@@ -375,6 +383,17 @@ export async function approveOpname(
       if (opname.status !== "IN_PROGRESS" && opname.status !== "REVIEW") {
         throw new BusinessRuleError(
           `Sesi opname berstatus ${opname.status} dan tidak bisa disetujui lagi.`,
+        );
+      }
+
+      // Four-eyes: the counter cannot be the approver.
+      //
+      // Opname is the one operation that can inflate inventory on purpose, so
+      // letting the person who counted it sign it off removes the only control
+      // that catches an error — or an intention — hiding in the variance.
+      if (opname.userId === userId) {
+        throw new BusinessRuleError(
+          "Sesi opname tidak dapat disetujui oleh orang yang sama yang menghitungnya. Minta supervisor lain untuk menyetujui.",
         );
       }
 
@@ -407,14 +426,32 @@ export async function approveOpname(
         } => line.direction !== "NONE" && line.difference !== null,
       );
 
-      if (differing.length === 0) {
-        // Nothing to correct: close the session as approved without writing
-        // zero-value ledger rows.
-        await tx.stockOpname.update({
-          where: { id: opnameId },
-          data: { status: "APPROVED", approvedAt: new Date(), finishedAt: new Date() },
-        });
+      // Claim the session before touching stock.
+      //
+      // The status read above is a plain SELECT, so two approvals arriving
+      // together both see IN_PROGRESS and both apply the same variances — the
+      // corrections would land twice while the ledger just shows two rows
+      // pointing at the same session. Conditioning the status change on the
+      // status we validated means only one of them proceeds.
+      const claimed = await tx.stockOpname.updateMany({
+        where: { id: opnameId, status: opname.status },
+        data: {
+          status: "APPROVED",
+          approvedAt: new Date(),
+          finishedAt: new Date(),
+          approvedById: userId,
+        },
+      });
 
+      if (claimed.count === 0) {
+        throw new BusinessRuleError(
+          "Sesi opname sudah disetujui oleh pengguna lain. Muat ulang halaman.",
+        );
+      }
+
+      if (differing.length === 0) {
+        // Nothing to correct: the session is closed as approved above, without
+        // writing zero-value ledger rows.
         return { adjusted: 0 };
       }
 
@@ -432,24 +469,24 @@ export async function approveOpname(
         })),
       );
 
-      // Freeze the counted figures onto the session so the result is auditable
-      // after approval.
-      for (const line of differing) {
+      // Freeze every counted line's result — not just the ones that moved — so
+      // the stored record agrees with what the review screen showed, and a report
+      // over StockOpnameItem does not have to recompute the difference itself.
+      for (const item of opname.items) {
+        const line = summary.lines.find(
+          (entry) => entry.productId === item.productId,
+        );
+
+        if (!line) continue;
+
         await tx.stockOpnameItem.updateMany({
-          where: { opnameId, productId: line.productId },
-          data: { difference: line.difference, valueDiff: line.valueDifference },
+          where: { opnameId, productId: item.productId },
+          data: {
+            difference: line.difference ?? 0,
+            valueDiff: line.valueDifference,
+          },
         });
       }
-
-      await tx.stockOpname.update({
-        where: { id: opnameId },
-        data: {
-          status: "APPROVED",
-          approvedAt: new Date(),
-          finishedAt: new Date(),
-          approvedById: userId,
-        },
-      });
 
       return { adjusted: differing.length };
     },

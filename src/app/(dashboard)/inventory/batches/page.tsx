@@ -213,7 +213,10 @@ function StatusTab({
       variant={active ? "secondary" : "ghost"}
       asChild
     >
-      <Link href={value === "all" ? "/inventory/batches" : "/inventory/batches?status=" + value}>
+      {/* Every tab passes its own value. Sending "all" to the bare page fell back to
+          the `expiring` default, so clicking "Semua batch" highlighted the
+          expiring tab while still rendering the expiring list. */}
+      <Link href={"/inventory/batches?status=" + value}>
         {label}
       </Link>
     </Button>

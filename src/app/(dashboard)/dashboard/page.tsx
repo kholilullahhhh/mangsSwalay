@@ -55,13 +55,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   CategorySalesChart,
   PaymentMethodChart,
   PurchaseVsSaleChart,
-  SalesTrendChart,
 } from "@/components/charts";
+import { SalesTrendTabs } from "@/components/dashboard/sales-trend-tabs";
 import {
   AlertSummaryCard,
   StatCard,
@@ -184,14 +183,14 @@ export default async function DashboardPage() {
           count={summary.lowStockCount}
           icon={AlertTriangle}
           tone="warning"
-          href="/inventory?filter=low"
+          href="/inventory?stock=low"
         />
         <AlertSummaryCard
           label="produk habis"
           count={summary.outOfStockCount}
           icon={AlertTriangle}
           tone="danger"
-          href="/inventory?filter=out"
+          href="/inventory?stock=out"
         />
         <AlertSummaryCard
           label="batch mendekati kedaluwarsa"
@@ -209,46 +208,22 @@ export default async function DashboardPage() {
         />
       </section>
 
-      <div className="grid gap-4 lg:grid-cols-3">
+<div className="grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader>
             <CardTitle className="text-base">Tren Penjualan</CardTitle>
             <CardDescription>
-              Pendapatan harian, tidak termasuk transaksi void dan retur.
+              Pendapatan harian, tidak termasuk transaksi void dan retur penuh.
             </CardDescription>
-            <CardAction>
-              <Tabs defaultValue="7">
-                <TabsList>
-                  <TabsTrigger value="7">7 Hari</TabsTrigger>
-                  <TabsTrigger value="30">30 Hari</TabsTrigger>
-                </TabsList>
-              </Tabs>
-            </CardAction>
           </CardHeader>
 
           <CardContent>
-            <Tabs defaultValue="7">
-              <TabsContent value="7">
-                {trend7.some((point) => point.total > 0) ? (
-                  <SalesTrendChart data={trend7} />
-                ) : (
-                  <WidgetEmptyState
-                    title="Belum ada penjualan 7 hari terakhir"
-                    description="Grafik akan muncul setelah transaksi pertama tercatat."
-                  />
-                )}
-              </TabsContent>
-              <TabsContent value="30">
-                {trend30.some((point) => point.total > 0) ? (
-                  <SalesTrendChart data={trend30} />
-                ) : (
-                  <WidgetEmptyState
-                    title="Belum ada penjualan 30 hari terakhir"
-                    description="Grafik akan muncul setelah transaksi pertama tercatat."
-                  />
-                )}
-              </TabsContent>
-            </Tabs>
+            <SalesTrendTabs
+              week={trend7}
+              month={trend30}
+              emptyTitle="Belum ada penjualan"
+              emptyDescription="Grafik akan muncul setelah transaksi pertama tercatat."
+            />
           </CardContent>
         </Card>
 
@@ -308,7 +283,7 @@ export default async function DashboardPage() {
                         {product.name}
                       </Link>
                       <p className="truncate text-xs text-muted-foreground">
-                        {product.sku} Â· {formatNumber(product.quantity)} terjual
+                        {product.sku} · {formatNumber(product.quantity)} terjual
                       </p>
                     </div>
                     <span className="tabular shrink-0 text-sm font-medium">
@@ -363,7 +338,7 @@ export default async function DashboardPage() {
                           {sale.invoiceNumber}
                         </Link>
                         <p className="text-xs text-muted-foreground">
-                          {formatTime(sale.date)} Â·{" "}
+                          {formatTime(sale.date)} ·{" "}
                           {PAYMENT_LABELS[sale.paymentMethod] ??
                             sale.paymentMethod}
                         </p>

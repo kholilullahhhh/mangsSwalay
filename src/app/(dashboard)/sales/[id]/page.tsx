@@ -3,7 +3,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 
-import { requirePagePermission, hasPermission } from "@/lib/auth/session";
+import { requireAnyPermission, hasPermission } from "@/lib/auth/session";
+import { roleHasPermission } from "@/lib/rbac";
 import { getSaleById } from "@/lib/sales/mutations";
 import {
   canRefund,
@@ -56,12 +57,19 @@ export default async function SaleDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  await requirePagePermission("sales:view");
+  // Either grant opens the screen. A cashier holds `sales:view-own` only, and
+  // "Penjualan Saya" links every one of their invoices here — gating on
+  // `sales:view` alone made that link lead to a 403.
+  const user = await requireAnyPermission(["sales:view", "sales:view-own"]);
+  const scopedToSelf = !roleHasPermission(user.role, "sales:view");
 
   const { id } = await params;
   const sale = await getSaleById(id);
 
-  if (!sale) {
+  // Widening the gate is only safe if the read is scoped with it: someone who
+  // may only see their own takings must not reach another's invoice by guessing
+  // the id out of the URL.
+  if (!sale || (scopedToSelf && sale.userId !== user.id)) {
     notFound();
   }
 

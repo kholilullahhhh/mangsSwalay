@@ -39,6 +39,8 @@ export interface CartTotals {
   lineDiscountTotal: number;
   afterLineDiscount: number;
   promotionDiscount: number;
+  /** Value of points the member redeemed, already reduced from the subtotal. */
+  pointsDiscount: number;
   manualDiscount: number;
   tax: number;
   total: number;
@@ -50,8 +52,14 @@ export interface CalculateTotalsInput {
   lines: CartLine[];
   /** Voucher or promo codes entered at checkout. */
   promotions?: AppliedPromotion[];
-  /** Manual discount entered by the cashier, integer rupiah. */
+  /**
+   * Manual discount entered by the cashier, integer rupiah. Only the server may
+   * set this on a real sale: the amount is a decision about price, not about
+   * arithmetic, so it belongs to whoever holds the discount permission.
+   */
   manualDiscount?: number;
+  /** Value of redeemed loyalty points, integer rupiah. */
+  pointsDiscount?: number;
   /** Tax rate as a fraction, e.g. 0.11 for 11%. Omit or 0 for no tax. */
   taxRate?: number;
 }
@@ -74,8 +82,9 @@ export function cartSubtotal(lines: CartLine[]): number {
  * Order of operations is fixed and deliberate:
  *   1. line subtotals (quantity × price, minus per-line discount)
  *   2. promotional discounts, applied to the discounted subtotal
- *   3. manual discount, applied last so it can never exceed what is owed
- *   4. tax, computed on the post-discount amount
+ *   3. redeemed loyalty points
+ *   4. manual discount, applied last so it can never exceed what is owed
+ *   5. tax, computed on the post-discount amount
  *
  * Applying tax after discounts avoids charging tax on an amount the customer
  * did not pay.
@@ -84,6 +93,7 @@ export function calculateTotals({
   lines,
   promotions = [],
   manualDiscount = 0,
+  pointsDiscount = 0,
   taxRate = 0,
 }: CalculateTotalsInput): CartTotals {
   const subtotal = cartSubtotal(lines);
@@ -109,12 +119,25 @@ export function calculateTotals({
     afterLineDiscount,
   );
 
-  const appliedManualDiscount = clampDiscount(
-    manualDiscount,
+  // Points come off what is still owed, after the promotion has been applied: a
+  // member redeeming against an already-discounted basket must not be refunded
+  // for the difference.
+  const appliedPointsDiscount = clampDiscount(
+    pointsDiscount,
     afterLineDiscount - promotionDiscount,
   );
 
-  const taxable = afterLineDiscount - promotionDiscount - appliedManualDiscount;
+  const appliedManualDiscount = clampDiscount(
+    manualDiscount,
+    afterLineDiscount - promotionDiscount - appliedPointsDiscount,
+  );
+
+  const taxable =
+    afterLineDiscount -
+    promotionDiscount -
+    appliedPointsDiscount -
+    appliedManualDiscount;
+
   const tax = Math.round(taxable * taxRate);
 
   return {
@@ -122,6 +145,7 @@ export function calculateTotals({
     lineDiscountTotal,
     afterLineDiscount,
     promotionDiscount,
+    pointsDiscount: appliedPointsDiscount,
     manualDiscount: appliedManualDiscount,
     tax,
     total: taxable + tax,

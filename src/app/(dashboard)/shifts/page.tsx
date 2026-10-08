@@ -1,7 +1,11 @@
 import type { Metadata } from "next";
 import { Wallet } from "lucide-react";
 
-import { requirePagePermission, hasPermission } from "@/lib/auth/session";
+import {
+  requirePagePermission,
+  hasPermission,
+} from "@/lib/auth/session";
+import { parsePagination, toPageRequest } from "@/lib/pagination";
 import { getOpenShift, listShifts, getShiftComponents } from "@/lib/shifts/mutations";
 import { expectedCash } from "@/lib/shifts/rules";
 import { formatCurrency, formatDate, formatNumber, formatTime } from "@/lib/format";
@@ -16,6 +20,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { EmptyState } from "@/components/data/empty-state";
+import { TablePagination } from "@/components/data/table-pagination";
 
 import { ShiftControls } from "./controls";
 
@@ -29,10 +34,29 @@ export const metadata: Metadata = {
  * A cashier sees only their own shifts; a manager or admin sees the whole team,
  * because reconciling the drawer is a supervisory responsibility.
  */
-export default async function ShiftsPage() {
+export default async function ShiftsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const user = await requirePagePermission("shifts:view-own");
 
   const canViewAll = await hasPermission("shifts:view-all");
+
+  const params = await searchParams;
+  const single = (value: string | string[] | undefined) =>
+    Array.isArray(value) ? value[0] : value || undefined;
+
+  const pageRequest = parsePagination({
+    page: single(params.page),
+    perPage: single(params.perPage),
+  });
+
+  const serialised: Record<string, string> = {};
+  for (const [key, value] of Object.entries(params)) {
+    const one = Array.isArray(value) ? value[0] : value;
+    if (one) serialised[key] = one;
+  }
 
   const openShift = await getOpenShift(user.id);
 
@@ -42,6 +66,8 @@ export default async function ShiftsPage() {
 
   const { rows, total } = await listShifts({
     userId: canViewAll ? undefined : user.id,
+    take: pageRequest.perPage,
+    skip: (pageRequest.page - 1) * pageRequest.perPage,
   });
 
   return (
@@ -154,7 +180,8 @@ export default async function ShiftsPage() {
               title="Belum ada shift"
               description="Riwayat shift akan muncul setelah shift pertama dibuka."
             />
-          ) : (
+) : (
+            <>
             <Table>
               <TableHeader>
                 <TableRow>
@@ -224,8 +251,18 @@ export default async function ShiftsPage() {
                     </TableRow>
                   );
                 })}
-              </TableBody>
+</TableBody>
             </Table>
+
+            {/* The history used to stop at the first page with no way past it,
+                so the header's count and the visible rows disagreed once a
+                cashier had more than one shift per day. */}
+            <TablePagination
+              pagination={toPageRequest(total, pageRequest)}
+              searchParams={serialised}
+              total={total}
+            />
+            </>
           )}
         </CardContent>
       </Card>

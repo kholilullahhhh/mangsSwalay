@@ -39,7 +39,7 @@ import {
   createPromotionAction,
   updatePromotionAction,
   type CrudResult,
-} from "@/app/(dashboard)/admin/actions";
+} from "@/actions/admin-actions";
 import { CheckboxField, Field, FormError } from "./fields";
 
 /**

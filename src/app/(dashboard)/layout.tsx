@@ -30,8 +30,12 @@ export default async function DashboardLayout({
 
   // Only fetch what the sidebar and topbar render.
   const [unreadCount, openShift] = await Promise.all([
+    // Broadcast alerts (`userId: null`) count too. Every stock and expiry
+    // notification the system raises is a broadcast, so filtering to this user's
+    // own rows left the bell permanently at zero while the notifications page
+    // listed alerts — the two screens disagreed about the same data.
     prisma.notification.count({
-      where: { isRead: false, userId: user.id },
+      where: { isRead: false, OR: [{ userId: user.id }, { userId: null }] },
     }),
     prisma.cashShift.findFirst({
       where: { userId: user.id, status: "OPEN" },

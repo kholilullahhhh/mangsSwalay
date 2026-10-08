@@ -15,8 +15,15 @@ import { NextResponse, type NextRequest } from "next/server";
 
 const SESSION_COOKIE = "swalayaku_session";
 
-/** Routes reachable without a session. */
+/**
+ * Routes reachable without a session.
+ *
+ * `/` is the public storefront, so it must be listed: without it every anonymous
+ * visitor is bounced to the login screen and the landing page is unreachable, and
+ * because the redirect lands on a 200 page nothing in a status-code check notices.
+ */
 const PUBLIC_PREFIXES = [
+  "/",
   "/login",
   "/api/auth",
   "/_next",

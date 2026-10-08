@@ -34,13 +34,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { formatCurrency, formatNumber } from "@/lib/format";
 import {
   PAYMENT_METHODS as PAYMENT_METHOD_OPTIONS,
@@ -53,8 +46,10 @@ import {
   type CartLine,
 } from "@/lib/pos/cart";
 
-import { checkoutAction, type CheckoutResult } from "./actions";
+import { checkoutAction, lookupPosBarcodeAction, type CheckoutResult } from "./actions";
 import { previewPromotionAction } from "./promotion-actions";
+import { CustomerPickerDialog } from "@/components/pos/customer-picker-dialog";
+import { HeldCartsDialog } from "@/components/pos/held-carts-dialog";
 import { PaymentDialog } from "./payment-dialog";
 import { ReceiptDialog } from "./receipt-dialog";
 
@@ -75,6 +70,8 @@ export interface PosCustomer {
   phone: string | null;
   memberNumber: string | null;
   isMember: boolean;
+  /** Loyalty balance, shown so the cashier knows what can be redeemed. */
+  points: number;
 }
 
 export interface PosShift {
@@ -138,19 +135,25 @@ export function PosTerminal({
   customers,
   shift,
   loyaltyRatio,
+  pointValue,
   taxRate,
   cashierName,
   store,
+  canApplyDiscount,
 }: {
   initialProducts: PosProduct[];
   categories: Array<{ id: string; name: string }>;
   customers: PosCustomer[];
   shift: PosShift | null;
   loyaltyRatio: number;
+  /** Rupiah each loyalty point is worth, for the redemption preview. */
+  pointValue: number;
   /** Store tax rate as a fraction, for the running-total preview only. */
   taxRate: number;
   cashierName: string;
-  store: { name: string; address: string; phone: string };
+  store: { name: string; address: string; phone: string; footer: string };
+  /** Mirrors the server check, so the field is not offered where it is refused. */
+  canApplyDiscount: boolean;
 }) {
   const router = useRouter();
 
@@ -162,6 +165,8 @@ export function PosTerminal({
   const [customerQuery, setCustomerQuery] = useState("");
   const [manualDiscount, setManualDiscount] = useState(0);
   const [discountInput, setDiscountInput] = useState("");
+  const [redeemInput, setRedeemInput] = useState("");
+  const [redeemPoints, setRedeemPoints] = useState(0);
   const [promotion, setPromotion] = useState<AppliedPromotion | null>(null);
   const [promotionInput, setPromotionInput] = useState("");
   const [promotionError, setPromotionError] = useState<string | null>(null);
@@ -170,6 +175,7 @@ export function PosTerminal({
   const [heldCarts, setHeldCarts] = useState<HeldCart[]>([]);
   const [holdOpen, setHoldOpen] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
   const [isCheckingOut, setIsCheckingOut] = useState(false);
 
   const searchRef = useRef<HTMLInputElement>(null);
@@ -186,9 +192,10 @@ export function PosTerminal({
         lines,
         promotions: promotion ? [promotion] : [],
         manualDiscount,
+        pointsDiscount: redeemPoints * pointValue,
         taxRate,
       }),
-    [lines, promotion, manualDiscount, taxRate],
+    [lines, promotion, manualDiscount, redeemPoints, pointValue, taxRate],
   );
 
   // ── Catalogue ────────────────────────────────────────────────────────────
@@ -268,6 +275,8 @@ export function PosTerminal({
     setPromotion(null);
     setPromotionInput("");
     setPromotionError(null);
+    setRedeemInput("");
+    setRedeemPoints(0);
     setCustomer(null);
   }, []);
 
@@ -321,30 +330,50 @@ export function PosTerminal({
   // ── Barcode scanning ─────────────────────────────────────────────────────
   // A hardware scanner behaves like a keyboard: it types fast and finishes with
   // Enter. This handler captures that without needing a dedicated scanner API.
+  //
+  // The lookup goes to the server rather than to the product grid already in
+  // memory: the grid is only a slice of the catalogue, so matching locally would
+  // make every product outside that slice unscannable — the scanner would
+  // report "not found" for an item that is sitting on the shelf in front of the
+  // cashier.
   const handleScan = useCallback(
-    (raw: string) => {
+    async (raw: string) => {
       const barcode = raw.trim();
 
       if (!barcode) return;
 
-      // Exact barcode match only. A partial match would add the wrong product
+      // Exact match only. A partial match would add the wrong product
       // to the cart, which is far worse than a "not found" message.
-      const match = initialProducts.find(
+      const local = initialProducts.find(
         (product) => product.barcode === barcode,
       );
 
-      if (!match) {
-        setScanError(
-          barcode.length >= 6
-            ? `Barcode ${barcode} tidak ditemukan.`
-            : `Barcode tidak valid: ${barcode}`,
-        );
+      if (local) {
+        addProduct(local);
         scanRef.current?.select();
         return;
       }
 
-      addProduct(match);
-      scanRef.current?.select();
+      setIsScanning(true);
+
+      try {
+        const found = await lookupPosBarcodeAction(barcode);
+
+        if (!found) {
+          setScanError(`Barcode ${barcode} tidak ditemukan.`);
+        } else if (!found.isActive) {
+          setScanError(`${found.name} sudah dinonaktifkan dan tidak bisa dijual.`);
+        } else if (found.stock <= 0) {
+          setScanError(`Stok ${found.name} habis.`);
+        } else {
+          addProduct(found);
+        }
+      } catch {
+        setScanError("Gagal mencari barcode. Coba lagi.");
+      } finally {
+        setIsScanning(false);
+        scanRef.current?.select();
+      }
     },
     [initialProducts, addProduct],
   );
@@ -449,6 +478,7 @@ export function PosTerminal({
         paymentMethod: method,
         amountPaid,
         manualDiscount,
+        redeemPoints,
         taxRate,
         lines: lines.map((line) => ({
           productId: line.productId,
@@ -473,20 +503,6 @@ export function PosTerminal({
     }
   }
 
-  const filteredCustomers = useMemo(() => {
-    const trimmed = customerQuery.trim().toLowerCase();
-    if (!trimmed) return customers.slice(0, 50);
-
-    return customers
-      .filter(
-        (entry) =>
-          entry.name.toLowerCase().includes(trimmed) ||
-          entry.phone?.includes(trimmed) ||
-          entry.memberNumber?.toLowerCase().includes(trimmed),
-      )
-      .slice(0, 50);
-  }, [customers, customerQuery]);
-
   return (
     <div className="space-y-4">
       {/* Barcode input: a real input so hardware scanners work, but visually
@@ -497,7 +513,7 @@ export function PosTerminal({
           const input = event.currentTarget.elements.namedItem(
             "barcode",
           ) as HTMLInputElement;
-          handleScan(input.value);
+          void handleScan(input.value);
         }}
         className="flex items-center gap-2"
       >
@@ -509,9 +525,12 @@ export function PosTerminal({
             name="barcode"
             inputMode="numeric"
             autoComplete="off"
-            placeholder="Scan barcode atau ketik nomor barcode, lalu Enter"
+            placeholder={
+              isScanning ? "Mencari barcode…" : "Scan barcode atau ketik nomor barcode, lalu Enter"
+            }
             className="pl-9 font-mono"
             autoFocus
+            readOnly={isScanning}
             aria-label="Input barcode"
           />
         </div>
@@ -551,7 +570,14 @@ export function PosTerminal({
         </Alert>
       ) : null}
 
-      <div className="grid gap-4 xl:grid-cols-[1fr_380px_320px]">
+      {/* Three panes on desktop, two from tablet width, one only on a phone.
+
+          The intermediate step is the important one: `xl:` alone left 768px–1279px
+          as a single column, so on the tablet a cashier actually works on, the
+          whole cart and the payment button sat below ~120 product tiles. The
+          `minmax` floor stops the catalogue collapsing to ~240px at 1280px once
+          the 256px sidebar is subtracted, which is the width a small laptop has. */}
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)] xl:grid-cols-[minmax(320px,1fr)_380px_320px]">
         {/* ── Catalogue ────────────────────────────────────────────────── */}
         <section aria-label="Katalog produk" className="space-y-3">
           <div className="flex flex-wrap gap-2">
@@ -634,7 +660,10 @@ export function PosTerminal({
         {/* ── Cart ─────────────────────────────────────────────────────── */}
         <section
           aria-label="Keranjang"
-          className="flex flex-col rounded-lg border bg-card"
+          // Sticky from tablet width so the cart and the payment button stay
+          // reachable while the cashier scrolls the catalogue. On a phone it
+          // simply sits below it, in the natural order.
+          className="flex flex-col rounded-lg border bg-card lg:sticky lg:top-16 lg:max-h-[calc(100svh-5rem)] lg:overflow-hidden"
         >
           <header className="flex items-center justify-between gap-2 border-b px-4 py-3">
             <div>
@@ -668,7 +697,8 @@ export function PosTerminal({
             </div>
           </header>
 
-          <div className="max-h-[28rem] flex-1 overflow-y-auto">
+          <div className="lg:flex-1 lg:overflow-y-auto">
+              <div className="max-h-[28rem] lg:max-h-none">
             {lines.length === 0 ? (
               <p className="px-4 py-12 text-center text-sm text-muted-foreground">
                 Keranjang kosong. Scan barcode atau pilih produk.
@@ -755,7 +785,8 @@ export function PosTerminal({
                 ))}
               </ul>
             )}
-          </div>
+              </div>
+            </div>
 
           <footer className="border-t px-4 py-3">
             <Button
@@ -810,6 +841,15 @@ export function PosTerminal({
                 <dt>Promo {promotion?.code}</dt>
                 <dd className="tabular">
                   -{formatCurrency(totals.promotionDiscount)}
+                </dd>
+              </div>
+            ) : null}
+
+            {totals.pointsDiscount > 0 ? (
+              <div className="flex justify-between text-stock-ok">
+                <dt>Poin ditukar</dt>
+                <dd className="tabular">
+                  -{formatCurrency(totals.pointsDiscount)}
                 </dd>
               </div>
             ) : null}
@@ -898,43 +938,95 @@ export function PosTerminal({
             ) : null}
           </div>
 
-          <div className="space-y-1.5">
-            <Label htmlFor="manual-discount">Diskon manual (Rp)</Label>
-            <Input
-              id="manual-discount"
-              type="number"
-              min={0}
-              step={1000}
-              value={discountInput}
-              onChange={(event) => {
-                const raw = event.target.value;
-                setDiscountInput(raw);
-                const parsed = Number.parseInt(raw, 10);
-                setManualDiscount(
-                  Number.isFinite(parsed) && parsed > 0
-                    ? Math.min(parsed, totals.afterLineDiscount)
-                    : 0,
-                );
-              }}
-              placeholder="0"
-              className="tabular"
-            />
-            {manualDiscount > 0 && manualDiscount < totals.afterLineDiscount ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 px-1 text-xs text-muted-foreground"
-                onClick={() => {
-                  setDiscountInput("");
-                  setManualDiscount(0);
-                }}
-              >
-                Hapus diskon
-              </Button>
-            ) : null}
-          </div>
+          {customer?.isMember ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="redeem-points">
+                Tukar poin ({formatNumber(customer.points)} tersedia)
+              </Label>
+              <div className="flex gap-1">
+                <Input
+                  id="redeem-points"
+                  type="number"
+                  min={0}
+                  step={1}
+                  max={customer.points}
+                  value={redeemInput}
+                  onChange={(event) => {
+                    const raw = event.target.value;
+                    setRedeemInput(raw);
 
-          {customer?.isMember && totals.total > 0 ? (
+                    const parsed = Number.parseInt(raw, 10);
+                    setRedeemPoints(
+                      Number.isFinite(parsed) && parsed > 0
+                        ? Math.min(parsed, customer.points)
+                        : 0,
+                    );
+                  }}
+                  placeholder="0"
+                  className="tabular"
+                />
+                {redeemPoints > 0 ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="shrink-0 px-2"
+                    onClick={() => {
+                      setRedeemInput("");
+                      setRedeemPoints(0);
+                    }}
+                  >
+                    Batal
+                  </Button>
+                ) : null}
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                1 poin = {formatCurrency(pointValue)}
+                {redeemPoints > 0
+                  ? ` · potongan ${formatCurrency(totals.pointsDiscount)}`
+                  : ""}
+              </p>
+            </div>
+          ) : null}
+
+          {canApplyDiscount ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="manual-discount">Diskon manual (Rp)</Label>
+              <Input
+                id="manual-discount"
+                type="number"
+                min={0}
+                step={1000}
+                value={discountInput}
+                onChange={(event) => {
+                  const raw = event.target.value;
+                  setDiscountInput(raw);
+                  const parsed = Number.parseInt(raw, 10);
+                  setManualDiscount(
+                    Number.isFinite(parsed) && parsed > 0
+                      ? Math.min(parsed, totals.afterLineDiscount)
+                      : 0,
+                  );
+                }}
+                placeholder="0"
+                className="tabular"
+              />
+              {manualDiscount > 0 && manualDiscount < totals.afterLineDiscount ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-1 text-xs text-muted-foreground"
+                  onClick={() => {
+                    setDiscountInput("");
+                    setManualDiscount(0);
+                  }}
+                >
+                  Hapus diskon
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+
+          {customer?.isMember && loyaltyRatio > 0 && totals.total > 0 ? (
             <p className="text-xs text-muted-foreground">
               Poin member: +{formatNumber(Math.floor(totals.total / loyaltyRatio))}
             </p>
@@ -965,139 +1057,42 @@ export function PosTerminal({
       </div>
 
       {/* ── Customer picker ─────────────────────────────────────────────── */}
-      <Dialog open={customerOpen} onOpenChange={setCustomerOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Pilih Pelanggan</DialogTitle>
-            <DialogDescription>
-              Member mendapat poin loyalitas. Pelanggan umum tetap boleh
-              transact tanpa membership.
-            </DialogDescription>
-          </DialogHeader>
-
-          <Input
-            value={customerQuery}
-            onChange={(event) => setCustomerQuery(event.target.value)}
-            placeholder="Cari nama, nomor telepon, atau nomor member…"
-            autoFocus
-            aria-label="Cari pelanggan"
-          />
-
-          <div className="max-h-80 overflow-y-auto">
-            {filteredCustomers.length === 0 ? (
-              <p className="py-8 text-center text-sm text-muted-foreground">
-                Pelanggan tidak ditemukan.
-              </p>
-            ) : (
-              <ul className="divide-y">
-                {filteredCustomers.map((entry) => (
-                  <li key={entry.id}>
-                    <button
-                      type="button"
-                      className="flex w-full items-center justify-between gap-3 px-2 py-2.5 text-left text-sm hover:bg-accent"
-                      onClick={() => {
-                        setCustomer(entry);
-                        setCustomerOpen(false);
-                        setCustomerQuery("");
-                      }}
-                    >
-                      <span className="min-w-0">
-                        <span className="block truncate font-medium">
-                          {entry.name}
-                        </span>
-                        <span className="block truncate text-xs text-muted-foreground">
-                          {entry.phone ?? "—"}
-                        </span>
-                      </span>
-                      {entry.isMember ? (
-                        <Badge variant="secondary" className="shrink-0">
-                          {entry.memberNumber ?? "Member"}
-                        </Badge>
-                      ) : null}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-
-          {customer ? (
-            <Button
-              variant="outline"
-              className="w-full"
-              onClick={() => {
-                setCustomer(null);
-                setCustomerOpen(false);
-              }}
-            >
-              Hapus pelanggan
-            </Button>
-          ) : null}
-        </DialogContent>
-      </Dialog>
+      <CustomerPickerDialog
+        open={customerOpen}
+        onOpenChange={setCustomerOpen}
+        customers={customers}
+        query={customerQuery}
+        onQueryChange={setCustomerQuery}
+        selected={customer}
+        onSelect={(entry) => {
+          // The picker's own row type is the looser one; fill in the balance so
+          // the redemption control has something to work with.
+          setCustomer({
+            ...entry,
+            points: entry.points ?? 0,
+          });
+          setRedeemInput("");
+          setRedeemPoints(0);
+          setCustomerOpen(false);
+          setCustomerQuery("");
+        }}
+        onClear={() => {
+          setCustomer(null);
+          setCustomerOpen(false);
+        }}
+      />
 
       {/* ── Hold / resume ───────────────────────────────────────────────── */}
-      <Dialog open={holdOpen} onOpenChange={setHoldOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Transaksi Tersimpan</DialogTitle>
-            <DialogDescription>
-              Simpan keranjang sementara untuk dilayani pelanggan lain.
-            </DialogDescription>
-          </DialogHeader>
-
-          <Button onClick={holdCart} className="w-full">
-            <Pause className="size-4" aria-hidden />
-            Simpan keranjang saat ini
-          </Button>
-
-          {heldCarts.length > 0 ? (
-            <ul className="divide-y">
-              {heldCarts.map((held) => (
-                <li
-                  key={held.id}
-                  className="flex items-center justify-between gap-2 py-2 text-sm"
-                >
-                  <span className="min-w-0">
-                    <span className="block font-medium">{held.label}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {held.lines.length} item ·{" "}
-                      {formatCurrency(
-                        calculateTotals({ lines: held.lines }).total,
-                      )}
-                    </span>
-                  </span>
-                  <div className="flex shrink-0 gap-1">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => resumeCart(held.id)}
-                    >
-                      Lanjutkan
-                    </Button>
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      onClick={() =>
-                        setHeldCarts((current) =>
-                          current.filter((entry) => entry.id !== held.id),
-                        )
-                      }
-                      aria-label={`Hapus ${held.label}`}
-                    >
-                      <X className="size-4" aria-hidden />
-                    </Button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="py-4 text-center text-sm text-muted-foreground">
-              Belum ada transaksi tersimpan.
-            </p>
-          )}
-        </DialogContent>
-      </Dialog>
+      <HeldCartsDialog
+        open={holdOpen}
+        onOpenChange={setHoldOpen}
+        held={heldCarts}
+        onHoldCurrent={holdCart}
+        onResume={resumeCart}
+        onDiscard={(id) =>
+          setHeldCarts((current) => current.filter((entry) => entry.id !== id))
+        }
+      />
 
       {/* Remounting on open resets the payment method and amount, so the next
           sale never inherits figures from the previous one. */}

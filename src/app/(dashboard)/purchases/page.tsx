@@ -6,6 +6,7 @@ import { requirePagePermission, hasPermission } from "@/lib/auth/session";
 import {
   listPurchases,
   listSupplierOptions,
+  listPurchaseProductOptions,
   type PurchaseListFilters,
 } from "@/lib/queries/purchases";
 import {
@@ -49,9 +50,12 @@ export default async function PurchasesPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requirePagePermission("purchases:view");
+await requirePagePermission("purchases:view");
 
   const params = await searchParams;
+
+  const paymentError = single(params.paymentError);
+  const paymentRecorded = single(params.payment) === "recorded";
 
   const filters: PurchaseListFilters = {
     search: single(params.search),
@@ -66,11 +70,13 @@ export default async function PurchasesPage({
     perPage: single(params.perPage),
   };
 
-  const [{ rows, total, pagination }, suppliers, canCreate] = await Promise.all([
-    listPurchases(filters),
-    listSupplierOptions(),
-    hasPermission("purchases:create"),
-  ]);
+const [{ rows, total, pagination }, suppliers, purchaseProducts, canCreate] =
+    await Promise.all([
+      listPurchases(filters),
+      listSupplierOptions(),
+      listPurchaseProductOptions(),
+      hasPermission("purchases:create"),
+    ]);
 
   const hasFilters = Boolean(
     filters.search ||
@@ -91,10 +97,31 @@ export default async function PurchasesPage({
           </p>
         </div>
 
-        {canCreate ? (
-          <NewPurchaseButton suppliers={suppliers} />
+{canCreate ? (
+          <NewPurchaseButton suppliers={suppliers} products={purchaseProducts} />
         ) : null}
       </div>
+
+      {/* The payment form is a plain server-rendered form with nowhere to render
+          an inline error, so its outcome comes back through the URL. Surfacing it
+          is the difference between "the payment failed" and "nothing happened". */}
+      {paymentRecorded ? (
+        <p
+          role="status"
+          className="rounded-md border border-stock-ok/40 bg-stock-ok/10 px-3 py-2 text-sm text-stock-ok"
+        >
+          Pembayaran berhasil dicatat.
+        </p>
+      ) : null}
+
+      {paymentError ? (
+        <p
+          role="alert"
+          className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+        >
+          Pembayaran gagal dicatat: {paymentError}
+        </p>
+      ) : null}
 
       <PurchaseFilters suppliers={suppliers} current={filters} />
 

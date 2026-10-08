@@ -361,7 +361,11 @@ async function main() {
       code: "PROMO-MEMBER-10K",
       name: "Potongan Rp10.000 Member",
       description: "Potongan Rp10.000 untuk member, min. belanja Rp50.000.",
-      type: "MINIMUM_PURCHASE" as const,
+      // FIXED, not MINIMUM_PURCHASE: that type is a *percentage* type, so a value
+      // of 10000 became 10000% and every qualifying basket got a 100%-off verdict
+      // — which checkout then refused as a zero total. The seeded code could never
+      // actually be used.
+      type: "FIXED" as const,
       value: 10000,
       minPurchaseAmount: 50000,
       startDate: now,
@@ -412,17 +416,31 @@ async function main() {
     { key: "store.email", value: "halo@swalayaku.test", description: "Email toko" },
     { key: "store.openTime", value: "07:00", description: "Jam buka" },
     { key: "store.closeTime", value: "22:00", description: "Jam tutup" },
-    {
+{
       key: "store.about",
+      // This text is rendered verbatim on the public landing page, so it has to
+      // be the store's own description: no placeholder, no filler.
       value:
         "Swalayaku adalah minimarket swasta yang melayani warga sejak 2019. " +
-        "Kami変わってきます committed menyediakan kebutuhan harian dengan produk berkualitas, " +
-        "harga bersahabat, dan pelayanan terbaik.",
+        "Kami menyediakan kebutuhan harian dengan produk berkualitas, harga " +
+        "bersahabat, dan pelayanan terbaik.",
       description: "Tentang toko",
     },
     { key: "loyalty.enabled", value: true, description: "Aktifkan sistem loyalitas member" },
     { key: "loyalty.ratio", value: 10000, description: "Setiap Rp10.000 = 1 poin" },
+    { key: "loyalty.pointValue", value: 100, description: "Nilai tukar 1 poin saat penukaran (Rp)" },
     { key: "expiry.warningDays", value: 30, description: "Peringatan kedaluwarsa H berapa hari" },
+    // Tax is gated on `tax.enabled`, so a database missing these two keys can
+    // never charge tax at all no matter what the settings screen shows. Seeded
+    // off, because a retail POS should not silently add 11% to a price the
+    // operator never agreed to.
+    { key: "tax.enabled", value: false, description: "Aktifkan pajak pada transaksi" },
+    { key: "tax.rate", value: 0.11, description: "Tarif pajak (0.11 = 11%)" },
+    {
+      key: "invoice.footer",
+      value: "Terima kasih telah berbelanja",
+      description: "Teks tambahan yang dicetak di bagian bawah struk",
+    },
   ];
 
   for (const s of settings) {

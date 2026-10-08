@@ -219,6 +219,39 @@ export async function listSupplierOptions(): Promise<
   });
 }
 
+export interface PurchaseProductOption {
+  id: string;
+  sku: string;
+  name: string;
+  hasExpiry: boolean;
+  purchasePrice: number;
+}
+
+/** Products available to order, for the purchase-creation form. */
+export async function listPurchaseProductOptions(): Promise<
+  PurchaseProductOption[]
+> {
+  const rows = await prisma.product.findMany({
+    where: { isActive: true },
+    select: {
+      id: true,
+      sku: true,
+      name: true,
+      hasExpiry: true,
+      purchasePrice: true,
+    },
+    orderBy: { name: "asc" },
+  });
+
+  return rows.map((row) => ({
+    id: row.id,
+    sku: row.sku,
+    name: row.name,
+    hasExpiry: row.hasExpiry,
+    purchasePrice: Number(row.purchasePrice),
+  }));
+}
+
 export interface SupplierListFilters {
   search?: string;
   isActive?: "true" | "false" | "all";

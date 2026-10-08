@@ -9,6 +9,70 @@
 /** Store timezone. All reporting and receipt timestamps use this zone. */
 export const STORE_TIME_ZONE = "Asia/Jakarta";
 
+/*
+ * Formatters are built once at module load, not per call.
+ *
+ * `new Intl.NumberFormat(...)` re-parses its options and rebuilds the formatter
+ * every time it is constructed. Measured against the call sites: the shifts
+ * table formats four currency values and two dates *per row*, so a 100-row page
+ * was constructing roughly six hundred formatters per render; the POS terminal
+ * redoes about twenty on every barcode scan. The till is the screen a cashier
+ * lives on, and this module is imported by seven client components too, so the
+ * option-parsing path ships to the browser.
+ *
+ * `Intl` formatter instances are immutable and stateless, so sharing them across
+ * callers is safe and behaviour is identical.
+ */
+const NF_CURRENCY_IDR = new Intl.NumberFormat("id-ID", {
+  style: "currency",
+  currency: "IDR",
+  maximumFractionDigits: 0,
+  minimumFractionDigits: 0,
+});
+
+const NF_DECIMAL_IDR = new Intl.NumberFormat("id-ID", {
+  maximumFractionDigits: 1,
+});
+
+const NF_PLAIN_IDR = new Intl.NumberFormat("id-ID");
+
+const DF_DATE_ID = new Intl.DateTimeFormat("id-ID", {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  timeZone: STORE_TIME_ZONE,
+});
+
+const DF_DATETIME_ID = new Intl.DateTimeFormat("id-ID", {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  timeZone: STORE_TIME_ZONE,
+});
+
+const DF_TIME_ID = new Intl.DateTimeFormat("id-ID", {
+  hour: "2-digit",
+  minute: "2-digit",
+  timeZone: STORE_TIME_ZONE,
+});
+
+const RTF_ID = new Intl.RelativeTimeFormat("id-ID", { numeric: "auto" });
+
+/** Zone-parts reader, shared by the store-day helpers below. */
+const DF_ZONE_PARTS = new Intl.DateTimeFormat("en-CA", {
+  timeZone: STORE_TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  weekday: "short",
+  hour12: false,
+});
+
 /**
  * Formats a Rupiah amount, e.g. `Rp 68.000`.
  *
@@ -18,12 +82,7 @@ export const STORE_TIME_ZONE = "Asia/Jakarta";
 export function formatCurrency(value: unknown): string {
   const amount = toNumber(value);
 
-  return new Intl.NumberFormat("id-ID", {
-    style: "currency",
-    currency: "IDR",
-    maximumFractionDigits: 0,
-    minimumFractionDigits: 0,
-  }).format(amount);
+return NF_CURRENCY_IDR.format(amount);
 }
 
 /** Compact currency for dashboard tiles, e.g. `Rp 1,2 jt`. */
@@ -47,14 +106,12 @@ export function formatCurrencyCompact(value: unknown): string {
 }
 
 function trim(value: number): string {
-  return new Intl.NumberFormat("id-ID", {
-    maximumFractionDigits: 1,
-  }).format(value);
+return NF_DECIMAL_IDR.format(value);
 }
 
 /** Plain number with Indonesian digit grouping, e.g. `1.250`. */
 export function formatNumber(value: unknown): string {
-  return new Intl.NumberFormat("id-ID").format(toNumber(value));
+  return NF_PLAIN_IDR.format(toNumber(value));
 }
 
 /**
@@ -104,12 +161,7 @@ export function formatDate(value: Date | string | null | undefined): string {
   const date = toDate(value);
   if (!date) return "-";
 
-  return new Intl.DateTimeFormat("id-ID", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    timeZone: STORE_TIME_ZONE,
-  }).format(date);
+return DF_DATE_ID.format(date);
 }
 
 /** Formats a date and time as `7 Okt 2026, 14:32`. */
@@ -119,14 +171,7 @@ export function formatDateTime(
   const date = toDate(value);
   if (!date) return "-";
 
-  return new Intl.DateTimeFormat("id-ID", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: STORE_TIME_ZONE,
-  }).format(date);
+return DF_DATETIME_ID.format(date);
 }
 
 /** Time only, e.g. `14:32`. */
@@ -134,11 +179,7 @@ export function formatTime(value: Date | string | null | undefined): string {
   const date = toDate(value);
   if (!date) return "-";
 
-  return new Intl.DateTimeFormat("id-ID", {
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: STORE_TIME_ZONE,
-  }).format(date);
+return DF_TIME_ID.format(date);
 }
 
 /** "3 menit lalu" style relative time, for feeds and audit logs. */

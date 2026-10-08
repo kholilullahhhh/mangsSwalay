@@ -29,6 +29,7 @@ export type AuditAction =
   | "STOCK_ADJUSTMENT"
   | "STOCK_OPNAME_CREATE"
   | "STOCK_OPNAME_APPROVE"
+  | "STOCK_OPNAME_CANCEL"
   | "BATCH_CREATE"
   | "BATCH_EXPIRE"
   // purchasing
@@ -63,6 +64,7 @@ export type AuditAction =
   | "USER_UPDATE"
   | "USER_DELETE"
   | "SETTINGS_UPDATE"
+  | "NOTIFICATION_REFRESH"
   | "NOTIFICATION_DELETE";
 
 export interface AuditInput {

@@ -12,7 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 
-import { updateSettingsAction } from "@/app/(dashboard)/admin/actions";
+import { updateSettingsAction } from "@/actions/admin-actions";
 import { FormError } from "@/components/admin/fields";
 
 /**

@@ -20,7 +20,11 @@ import {
 } from "@/components/ui/alert-dialog";
 import { formatCurrency, formatNumber } from "@/lib/format";
 
-import { approveOpnameAction, recordCountAction } from "../../actions";
+import {
+  approveOpnameAction,
+  cancelOpnameAction,
+  recordCountAction,
+} from "../../actions";
 
 export interface OpnameLineView {
   productId: string;
@@ -29,8 +33,10 @@ export interface OpnameLineView {
   unit: string;
   systemStock: number;
   physicalStock: number | null;
-  difference: number | null;
+difference: number | null;
   valueDifference: number | null;
+  /** Unit cost captured when the session opened; turns units into rupiah. */
+  unitCost: number;
   status: "PENDING" | "MATCHED" | "DIFFERENT";
 }
 
@@ -119,10 +125,18 @@ export function OpnameCounter({
                     <DifferenceCell value={effective} />
                   </td>
 
-                  <td className="tabular px-3 py-2 text-right text-muted-foreground">
+<td className="tabular px-3 py-2 text-right text-muted-foreground">
                     {effective === null
                       ? "-"
-                      : formatCurrency(effective)}
+                      : formatCurrency(
+                          // While editing, the unit delta has to be costed here —
+                          // the server has not computed the rupiah value for a
+                          // count that was never saved. Showing the raw unit delta
+                          // through `formatCurrency` would price 3 bottles as "Rp3".
+                          dirty
+                            ? effective * line.unitCost
+                            : line.valueDifference ?? 0,
+                        )}
                   </td>
 
                   <td className="px-3 py-2">
@@ -256,6 +270,73 @@ function SaveRowButton({
         <Save className="size-3.5" aria-hidden />
       )}
     </Button>
+  );
+}
+
+/**
+ * Abandons the session.
+ *
+ * Without this a count that was opened and then forgotten stayed IN_PROGRESS
+ * forever, holding its frozen system-stock baseline and re-offering itself as
+ * "Lanjutkan" on the list — the only way out was to count and approve everything.
+ */
+export function CancelOpnameAction({ opnameId }: { opnameId: string }) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [isPending, startTransition] = useTransition();
+
+  return (
+    <>
+      <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
+        Batalkan Sesi
+      </Button>
+
+      <AlertDialog open={open} onOpenChange={setOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Batalkan sesi opname ini?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Sesi akan ditandai dibatalkan dan hitungan di dalamnya tidak
+              lagi dapat diubah. Stok tidak berubah.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isPending}>Kembali</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isPending}
+              onClick={(event) => {
+                event.preventDefault();
+
+                const formData = new FormData();
+                formData.set("opnameId", opnameId);
+
+                startTransition(async () => {
+                  const result = await cancelOpnameAction(formData);
+
+                  if (result.error) {
+                    toast.error(result.error);
+                    setOpen(false);
+                    return;
+                  }
+
+                  toast.success("Sesi opname dibatalkan.");
+                  setOpen(false);
+                  router.refresh();
+                });
+              }}
+            >
+              {isPending ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+              ) : (
+                <AlertTriangle className="size-4" aria-hidden />
+              )}
+              Ya, batalkan
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
 

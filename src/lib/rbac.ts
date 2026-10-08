@@ -185,9 +185,14 @@ const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
     "suppliers:manage",
     "customers:view",
     "promotions:view",
-    "expenses:view",
+"expenses:view",
     "expenses:manage",
     "shifts:view-all",
+    // A manager who supervises the till still has their own drawer, and the
+    // "your open shift" panel is part of that screen. Without this the page 403s
+    // outright, because it gates on `shifts:view-own` before looking at
+    // `shifts:view-all`.
+    "shifts:view-own",
     "reports:sales",
     "reports:products",
     "reports:inventory",

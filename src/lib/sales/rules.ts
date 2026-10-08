@@ -26,6 +26,59 @@ export function remainingReturnable(item: RefundableItem): number {
   return Math.max(0, item.quantity - item.returnedQty);
 }
 
+/**
+ * Splits `total` across `weights`, largest-remainder style, so the parts sum to
+ * exactly `total`.
+ *
+ * Used to give every sale line the share of what the customer actually paid that
+ * belongs to it. A sale's line subtotals are pre-discount and pre-tax, while
+ * `Sale.total` is post-discount, post-tax — the difference is the customer's
+ * money. Splitting the real total means the refunds can never add up to more
+ * than was collected, and the last line absorbs the rounding so no rupiah is
+ * invented or lost along the way.
+ *
+ * Returns an empty array when there is nothing to allocate, so a caller can tell
+ * "no lines" from "every line is worth zero".
+ */
+export function allocateProportionally(
+  total: number,
+  weights: number[],
+): number[] {
+  const sum = weights.reduce((acc, weight) => acc + weight, 0);
+
+  if (weights.length === 0 || sum <= 0 || total <= 0) {
+    return weights.map(() => 0);
+  }
+
+  const shares: Array<{ index: number; remainder: number }> = [];
+  let distributed = 0;
+
+  for (const [index, weight] of weights.entries()) {
+    const exact = (total * weight) / sum;
+    const floored = Math.floor(exact);
+    distributed += floored;
+    shares.push({ index, remainder: exact - floored });
+  }
+
+  let leftover = total - distributed;
+
+  // Hand the odd rupiah to the largest fractional parts first, so the result is
+  // deterministic instead of dependent on iteration order.
+  shares.sort((a, b) => b.remainder - a.remainder || a.index - b.index);
+
+  const result = weights.map((_, index) =>
+    Math.floor((total * weights[index]) / sum),
+  );
+
+  for (const share of shares) {
+    if (leftover <= 0) break;
+    result[share.index] += 1;
+    leftover -= 1;
+  }
+
+  return result;
+}
+
 /** Evenly divided unit value, used for display and for partial refunds. */
 export function unitValueOf(item: RefundableItem): number {
   if (item.quantity <= 0) return 0;

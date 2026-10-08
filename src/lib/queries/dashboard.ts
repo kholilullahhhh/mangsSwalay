@@ -1,6 +1,7 @@
-import "server-only";
+﻿import "server-only";
 
 import { prisma } from "@/lib/db";
+import type { SaleStatus } from "@/generated/prisma/enums";
 import {
   startOfStoreDay,
   startOfStoreDayOffset,
@@ -15,6 +16,19 @@ import {
  * takings as today's. Aggregations run in Postgres rather than in JavaScript,
  * and only the columns the cards render are selected.
  */
+
+/**
+ * Sale statuses that represent money the store actually collected.
+ *
+ * A voided sale collected nothing. A fully refunded sale also nets to nothing,
+ * but a *partially* refunded one still collected most of it — so counting only
+ * COMPLETED (as this file used to) made the dashboard disagree with the reports,
+ * which have always used both. One definition, used everywhere.
+ */
+const REVENUE_STATUSES: SaleStatus[] = [
+  "COMPLETED",
+  "PARTIALLY_REFUNDED",
+];
 
 export interface DashboardSummary {
   salesToday: number;
@@ -58,21 +72,21 @@ export async function getSummary(): Promise<DashboardSummary> {
   ] = await Promise.all([
     // Voided sales are excluded everywhere: they are not revenue.
     prisma.sale.aggregate({
-      where: { date: { gte: todayStart }, status: "COMPLETED" },
+      where: { date: { gte: todayStart }, status: { in: REVENUE_STATUSES } },
       _sum: { total: true },
       _count: { _all: true },
     }),
     prisma.sale.aggregate({
-      where: { date: { gte: yesterdayStart, lt: todayStart }, status: "COMPLETED" },
+      where: { date: { gte: yesterdayStart, lt: todayStart }, status: { in: REVENUE_STATUSES } },
       _sum: { total: true },
     }),
     prisma.sale.aggregate({
-      where: { date: { gte: monthStart }, status: "COMPLETED" },
+      where: { date: { gte: monthStart }, status: { in: REVENUE_STATUSES } },
       _sum: { total: true },
       _count: { _all: true },
     }),
     prisma.saleItem.aggregate({
-      where: { sale: { date: { gte: todayStart }, status: "COMPLETED" } },
+      where: { sale: { date: { gte: todayStart }, status: { in: REVENUE_STATUSES } } },
       _sum: { quantity: true },
     }),
     prisma.product.aggregate({
@@ -171,7 +185,7 @@ export async function getSalesTrend(
       COUNT(*) AS transactions
     FROM "Sale"
     WHERE "date" >= ${start}
-      AND status = 'COMPLETED'
+      AND status IN ('COMPLETED', 'PARTIALLY_REFUNDED')
     GROUP BY 1
     ORDER BY 1 ASC
   `;
@@ -209,11 +223,18 @@ export async function getSalesTrend(
   return points;
 }
 
+/**
+ * Day bucket key for a value Postgres grouped with
+ * `date_trunc('day', "date" AT TIME ZONE 'Asia/Jakarta')`.
+ *
+ * The instant is built in UTC, so `toISOString()` is the only reading that is
+ * correct on any host. The local getters this replaces produced a different key
+ * depending on the server's timezone â€” on the WIB host this app is meant to run
+ * on, every point of the trend chart was a day off from the row it came from and
+ * the chart rendered empty.
+ */
 function toDayKey(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  return date.toISOString().slice(0, 10);
 }
 
 export interface CategorySalesPoint {
@@ -241,7 +262,7 @@ export async function getSalesByCategory(
     JOIN "Product" p ON p.id = si."productId"
     JOIN "Category" c ON c.id = p."categoryId"
     WHERE s."date" >= ${start}
-      AND s.status = 'COMPLETED'
+      AND s.status IN ('COMPLETED', 'PARTIALLY_REFUNDED')
     GROUP BY c.name
     ORDER BY 2 DESC
     LIMIT 8
@@ -269,7 +290,7 @@ export async function getPaymentBreakdown(
 
   const grouped = await prisma.sale.groupBy({
     by: ["paymentMethod"],
-    where: { date: { gte: start }, status: "COMPLETED" },
+    where: { date: { gte: start }, status: { in: REVENUE_STATUSES } },
     _sum: { total: true },
     _count: { _all: true },
   });
@@ -302,7 +323,7 @@ export async function getTopProducts(
   const grouped = await prisma.saleItem.groupBy({
     by: ["productId"],
     where: {
-      sale: { date: { gte: start }, status: "COMPLETED" },
+      sale: { date: { gte: start }, status: { in: REVENUE_STATUSES } },
     },
     _sum: { quantity: true, subtotal: true },
     orderBy: { _sum: { quantity: "desc" } },
@@ -362,7 +383,7 @@ export async function getPurchaseVsSale(days = 14): Promise<PurchaseSalePoint[]>
         date_trunc('day', "date" AT TIME ZONE 'Asia/Jakarta') AS day,
         COALESCE(SUM(total), 0) AS total
       FROM "Sale"
-      WHERE "date" >= ${start} AND status = 'COMPLETED'
+      WHERE "date" >= ${start} AND status IN ('COMPLETED', 'PARTIALLY_REFUNDED')
       GROUP BY 1
     `,
   ]);

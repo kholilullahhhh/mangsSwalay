@@ -31,6 +31,33 @@ export interface LoginState {
   fieldErrors?: Record<string, string[]>;
 }
 
+/**
+ * The caller's address, for the brute-force limiter.
+ *
+ * `x-forwarded-for` is append-only, so the last hop is the one written by our own
+ * infrastructure; everything before it was supplied by the caller and is not
+ * trustworthy. Falls back to the platform headers Vercel and most CDNs set, and
+ * finally to `null` — which makes the limiter key on the identifier alone rather
+ * than silently trusting a header we cannot vouch for.
+ */
+function clientIp(headers: Headers): string | null {
+  const forwarded = headers.get("x-forwarded-for");
+
+  if (forwarded) {
+    const hops = forwarded.split(",").map((hop) => hop.trim());
+
+    if (hops.length > 0 && hops[hops.length - 1]) {
+      return hops[hops.length - 1];
+    }
+  }
+
+  return (
+    headers.get("x-real-ip") ??
+    headers.get("x-vercel-forwarded-for") ??
+    null
+  );
+}
+
 export async function loginAction(
   _prevState: LoginState,
   formData: FormData,
@@ -47,7 +74,15 @@ export async function loginAction(
   }
 
   const headerList = await headers();
-  const ip = headerList.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
+
+  // The *last* entry, not the first.
+  //
+  // `x-forwarded-for` is append-only: every proxy in the chain adds to it, so the
+  // right-most value is the one written by the infrastructure closest to us and
+  // the left-most is whatever the client sent. Reading the left-most meant the
+  // caller chose their own rate-limit bucket — rotating the header gave an
+  // unlimited number of guesses, defeating the limiter entirely.
+  const ip = clientIp(headerList);
 
   const result = await login({
     username: parsed.data.username,

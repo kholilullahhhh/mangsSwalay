@@ -15,6 +15,18 @@ export interface CrudResult {
   id?: string;
 }
 
+/** The customer fields the dialog binds to. */
+export interface CustomerFormValue {
+  id: string;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  address: string | null;
+  notes: string | null;
+  isMember: boolean;
+  isActive: boolean;
+}
+
 function fail(error: unknown): CrudResult {
   const actionError = toActionError(error);
   return {
@@ -125,11 +137,11 @@ export async function createCustomerAction(
 }
 
 export async function updateCustomerAction(
+  id: string,
   formData: FormData,
 ): Promise<CrudResult> {
   const user = await requirePermission("customers:manage");
 
-  const id = String(formData.get("id") ?? "");
   const parsed = customerSchema.safeParse(readCustomer(formData));
 
   if (!id) return { error: "ID pelanggan tidak valid." };
@@ -167,12 +179,20 @@ export async function updateCustomerAction(
         select: { memberNumber: true },
       });
 
-      const lastNumber = last?.memberNumber
-        ? Number(last.memberNumber.replace("MBR-", ""))
+      // `parseInt`, because `Number("MBR-000x")` would be NaN and the fallback
+      // has to be a number the counter can build on.
+      const parsedLast = last?.memberNumber
+        ? Number.parseInt(last.memberNumber.slice(4), 10)
         : 0;
+      const lastNumber = Number.isFinite(parsedLast) && parsedLast > 0 ? parsedLast : 0;
 
       memberNumber = "MBR-" + String(lastNumber + 1).padStart(4, "0");
     }
+
+    // Reactivating from the edit form. Deactivation used to be a one-way door:
+    // there was no way back except creating a duplicate customer, which would
+    // split their purchase history.
+    const isActive = formData.get("isActive") === "true";
 
     await prisma.customer.update({
       where: { id },
@@ -183,6 +203,7 @@ export async function updateCustomerAction(
         address: input.address || null,
         notes: input.notes || null,
         isMember: input.isMember,
+        isActive,
         memberNumber,
       },
     });

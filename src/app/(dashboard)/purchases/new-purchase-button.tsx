@@ -31,6 +31,17 @@ interface Line {
   productId: string;
   quantity: number;
   purchasePrice: number;
+  /** Required for perishable products; carried to the batch on receipt. */
+  expiryDate: string | null;
+  batchNumber: string | null;
+}
+
+export interface PurchaseProductOption {
+  id: string;
+  sku: string;
+  name: string;
+  hasExpiry: boolean;
+  purchasePrice: number;
 }
 
 /**
@@ -42,9 +53,11 @@ interface Line {
  */
 export function NewPurchaseButton({
   suppliers,
+  products,
   defaultOpen = false,
 }: {
   suppliers: Array<{ id: string; name: string }>;
+  products: PurchaseProductOption[];
   /** Opens on mount, for the dedicated /purchases/new page. */
   defaultOpen?: boolean;
 }) {
@@ -57,13 +70,16 @@ export function NewPurchaseButton({
   const [discount, setDiscount] = useState(0);
   const [tax, setTax] = useState(0);
   const [shippingCost, setShippingCost] = useState(0);
-  const [amountPaid, setAmountPaid] = useState(0);
   const [notes, setNotes] = useState("");
   const [productId, setProductId] = useState("");
   const [quantity, setQuantity] = useState(1);
   const [price, setPrice] = useState(0);
+  const [expiryInput, setExpiryInput] = useState("");
   const [lines, setLines] = useState<Line[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
+
+  const selectedProduct = products.find((entry) => entry.id === productId);
+  const isPerishable = Boolean(selectedProduct?.hasExpiry);
 
   const totals = useMemo(
     () => computePurchaseTotals(lines, { discount, tax, shippingCost }),
@@ -86,29 +102,48 @@ export function NewPurchaseButton({
       return;
     }
 
+    // Caught here rather than after saving, so the operator is not told to go and
+    // edit a purchase that does not exist yet.
+    if (isPerishable && !expiryInput) {
+      setFormError(
+        `${selectedProduct?.name ?? "Produk"} perlu tanggal kedaluwarsa. Tulis tanggal yang tertera pada kemasan.`,
+      );
+      return;
+    }
+
     setFormError(null);
 
+    const line: Line = {
+      productId,
+      quantity,
+      purchasePrice: price,
+      expiryDate: isPerishable ? expiryInput : null,
+      batchNumber: null,
+    };
+
     setLines((current) => {
-      const existing = current.find((line) => line.productId === productId);
+      const existing = current.find((entry) => entry.productId === productId);
 
       // Merge rather than duplicate: two rows for one product would break the
       // per-line ledger and the COGS report.
       if (existing) {
-        return current.map((line) =>
-          line.productId === productId
+        return current.map((entry) =>
+          entry.productId === productId
             ? {
-                ...line,
-                quantity: line.quantity + quantity,
+                ...entry,
+                quantity: entry.quantity + quantity,
                 purchasePrice: price,
+                expiryDate: line.expiryDate ?? entry.expiryDate,
               }
-            : line,
+            : entry,
         );
       }
 
-      return [...current, { productId, quantity, purchasePrice: price }];
+      return [...current, line];
     });
 
     setQuantity(1);
+    setExpiryInput("");
   }
 
   function submit() {
@@ -124,13 +159,25 @@ export function NewPurchaseButton({
       return;
     }
 
+    const missingExpiry = lines.find(
+      (line) =>
+        products.find((entry) => entry.id === line.productId)?.hasExpiry &&
+        !line.expiryDate,
+    );
+
+    if (missingExpiry) {
+      setFormError(
+        "Semua barang perishable harus memiliki tanggal kedaluwarsa.",
+      );
+      return;
+    }
+
     const formData = new FormData();
     formData.set("supplierId", supplierId);
     formData.set("date", date);
     formData.set("discount", String(discount));
     formData.set("tax", String(tax));
     formData.set("shippingCost", String(shippingCost));
-    formData.set("amountPaid", String(amountPaid));
     formData.set("notes", notes);
 
     for (const line of lines) {
@@ -141,7 +188,10 @@ export function NewPurchaseButton({
       const result = await createPurchaseAction(formData);
 
       if (result.error) {
-        setFormError(result.error);
+        setFormError(
+          result.error +
+            (result.fieldErrors?.expiryDate ? ` (${result.fieldErrors.expiryDate})` : ""),
+        );
         return;
       }
 
@@ -152,7 +202,6 @@ export function NewPurchaseButton({
       setDiscount(0);
       setTax(0);
       setShippingCost(0);
-      setAmountPaid(0);
       setNotes("");
       router.refresh();
 
@@ -219,34 +268,34 @@ export function NewPurchaseButton({
                   onChange={(event) => setDate(event.target.value)}
                 />
               </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor="amount-paid">Pembayaran (Rp)</Label>
-                <Input
-                  id="amount-paid"
-                  type="number"
-                  min={0}
-                  step={1000}
-                  value={amountPaid || ""}
-                  onChange={(event) =>
-                    setAmountPaid(Number(event.target.value) || 0)
-                  }
-                  placeholder="0"
-                  className="tabular"
-                />
-              </div>
             </div>
 
             <div className="space-y-2 rounded-lg border p-4">
               <Label>Tambah Barang</Label>
 
               <div className="grid gap-2 sm:grid-cols-[2fr_1fr_1fr_auto]">
-                <Input
-                  placeholder="ID produk"
+                <Select
                   value={productId}
-                  onChange={(event) => setProductId(event.target.value)}
-                  aria-label="ID produk"
-                />
+                  onValueChange={(next) => {
+                    setProductId(next);
+                    setExpiryInput("");
+                    // Default the cost to the product's current one; the operator
+                    // still types the real figure, which is what the line records.
+                    const match = products.find((entry) => entry.id === next);
+                    if (match) setPrice(match.purchasePrice);
+                  }}
+                >
+                  <SelectTrigger aria-label="Produk">
+                    <SelectValue placeholder="Pilih produk" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {products.map((product) => (
+                      <SelectItem key={product.id} value={product.id}>
+                        {product.name} ({product.sku})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <Input
                   type="number"
                   min={1}
@@ -275,39 +324,71 @@ export function NewPurchaseButton({
                 </Button>
               </div>
 
+              {isPerishable ? (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="line-expiry">
+                      Kedaluwarsa ({selectedProduct?.name})
+                    </Label>
+                    <Input
+                      id="line-expiry"
+                      type="date"
+                      value={expiryInput}
+                      onChange={(event) => setExpiryInput(event.target.value)}
+                    />
+                  </div>
+                  <p className="self-end text-xs text-muted-foreground">
+                    Tanggal ini dipakai untuk batch dan peringatan kedaluwarsa,
+                    jadi isi sesuai kemasan.
+                  </p>
+                </div>
+              ) : null}
+
               {lines.length > 0 ? (
                 <ul className="divide-y rounded border">
-                  {lines.map((line) => (
-                    <li
-                      key={line.productId}
-                      className="flex items-center justify-between gap-2 px-3 py-2 text-sm"
-                    >
-                      <span className="min-w-0 truncate font-mono text-xs">
-                        {line.productId}
-                      </span>
-                      <span className="tabular shrink-0 text-muted-foreground">
-                        {line.quantity} × {formatCurrency(line.purchasePrice)}
-                      </span>
-                      <span className="tabular shrink-0 font-medium">
-                        {formatCurrency(line.quantity * line.purchasePrice)}
-                      </span>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="size-7 shrink-0 text-muted-foreground hover:text-destructive"
-                        onClick={() =>
-                          setLines((current) =>
-                            current.filter(
-                              (entry) => entry.productId !== line.productId,
-                            ),
-                          )
-                        }
-                        aria-label={`Hapus baris ${line.productId}`}
+                  {lines.map((line) => {
+                    const meta = products.find(
+                      (entry) => entry.id === line.productId,
+                    );
+
+                    return (
+                      <li
+                        key={line.productId}
+                        className="flex items-center justify-between gap-2 px-3 py-2 text-sm"
                       >
-                        <Trash2 className="size-3.5" aria-hidden />
-                      </Button>
-                    </li>
-                  ))}
+                        <span className="min-w-0 truncate">
+                          <span className="block truncate text-sm font-medium">
+                            {meta?.name ?? line.productId}
+                          </span>
+                          <span className="font-mono text-[11px] text-muted-foreground">
+                            {meta?.sku ?? line.productId}
+                            {line.expiryDate ? ` · exp ${line.expiryDate}` : ""}
+                          </span>
+                        </span>
+                        <span className="tabular shrink-0 text-muted-foreground">
+                          {line.quantity} × {formatCurrency(line.purchasePrice)}
+                        </span>
+                        <span className="tabular shrink-0 font-medium">
+                          {formatCurrency(line.quantity * line.purchasePrice)}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-7 shrink-0 text-muted-foreground hover:text-destructive"
+                          onClick={() =>
+                            setLines((current) =>
+                              current.filter(
+                                (entry) => entry.productId !== line.productId,
+                              ),
+                            )
+                          }
+                          aria-label={`Hapus baris ${meta?.name ?? line.productId}`}
+                        >
+                          <Trash2 className="size-3.5" aria-hidden />
+                        </Button>
+                      </li>
+                    );
+                  })}
                 </ul>
               ) : (
                 <p className="py-2 text-center text-sm text-muted-foreground">

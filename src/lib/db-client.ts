@@ -18,7 +18,13 @@ import type { Prisma } from "@/generated/prisma/client";
 export type TxClient = Prisma.TransactionClient;
 
 /** Model delegates shared by the stock helpers. */
-export type StockClient = Pick<TxClient, "product" | "inventoryMovement">;
+export type StockClient = Pick<
+  TxClient,
+  "product" | "inventoryMovement" | "productBatch"
+>;
+
+/** Model delegates needed to read expiry batches. */
+export type BatchClient = Pick<TxClient, "productBatch">;
 
 /** Model delegates needed to write an audit row inside a transaction. */
 export type AuditClient = Pick<TxClient, "auditLog">;

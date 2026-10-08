@@ -89,10 +89,72 @@ async function main() {
     check("landing page responds 200", landing.status === 200, `got ${landing.status}`);
     check("landing is not a redirect to login", landing.status !== 307);
     check("landing mentions the store name", html.includes("Swalayaku"));
+
+    // A redirect to /login also returns 200, so the status check alone cannot
+    // tell "the storefront rendered" from "the login screen answered instead".
+    check(
+      "landing is the storefront, not the login screen",
+      !html.includes("$ACTION_REF") && !html.includes("Masuk ke Swalayaku"),
+    );
     check(
       "landing does not leak dashboard internals",
       !html.includes("KRobinson") && !html.includes("passwordHash"),
     );
+
+    // The page must be built from the store's own settings, so the details a
+    // visitor relies on are the ones the owner actually entered.
+    const store = await prisma.storeSetting.findMany({
+      where: {
+        key: {
+          in: [
+            "store.tagline",
+            "store.address",
+            "store.openTime",
+            "store.closeTime",
+          ],
+        },
+      },
+      select: { key: true, value: true },
+    });
+
+    const byKey = new Map(
+      store.map((row) => [row.key, String(row.value ?? "")]),
+    );
+
+    check(
+      "landing shows the configured tagline",
+      html.includes(byKey.get("store.tagline") ?? "__missing__"),
+      byKey.get("store.tagline"),
+    );
+
+    check(
+      "landing shows the configured address",
+      html.includes(byKey.get("store.address") ?? "__missing__"),
+      byKey.get("store.address"),
+    );
+
+    const hours =
+      (byKey.get("store.openTime") ?? "") +
+      " - " +
+      (byKey.get("store.closeTime") ?? "");
+
+    check("landing shows the opening hours", html.includes(hours), hours);
+
+    // Anti-slop: a shopfront must not invent testimonials or vanity metrics.
+    for (const fabrication of [
+      "testimonial",
+      "Testimonial",
+      "pelanggan puas",
+      "rating bintang",
+      "10.000+",
+      "99.9%",
+      "ribuan produk",
+    ]) {
+      check(
+        `landing invents no business claims ("${fabrication}")`,
+        !html.includes(fabrication),
+      );
+    }
   }
 
   {

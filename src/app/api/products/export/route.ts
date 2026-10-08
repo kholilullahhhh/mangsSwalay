@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { requirePermission } from "@/lib/auth/session";
 import { toErrorResponse } from "@/lib/error";
 import { formatCurrency } from "@/lib/format";
+import { csvCell } from "@/lib/csv";
 import { buildProductWhere } from "@/lib/queries/products";
 
 /**
@@ -103,9 +104,10 @@ export async function GET(request: Request): Promise<NextResponse> {
           product.isActive ? "Ya" : "Tidak",
           product.isFeatured ? "Ya" : "Tidak",
         ]
-          // Quote every field and escape embedded quotes so commas and
-          // newlines inside product names cannot corrupt the file.
-          .map((value) => `"${value.replace(/"/g, '""')}"`)
+          // Quoted so commas and newlines inside a name cannot corrupt the row,
+          // and formula-safe so a product name cannot execute in the reader's
+          // spreadsheet.
+          .map(csvCell)
           .join(","),
       ),
     ];

@@ -11,7 +11,7 @@
  *
  * The isolation is not tidiness. In PostgreSQL a single failed statement aborts
  * the whole transaction, so bundling the expected-rejection cases into one long
- * transaction would poison every later assertion — they would report failures
+ * transaction would poison every later assertion â€” they would report failures
  * caused by an earlier, deliberately provoked error. One transaction per
  * scenario is what keeps each result attributable.
  */
@@ -70,7 +70,7 @@ class Rollback extends Error {
  * Runs a scenario in its own transaction, then throws it away.
  *
  * The observed value is captured outside the transaction rather than returned
- * from the callback, because the rollback is thrown from a `finally` — which
+ * from the callback, because the rollback is thrown from a `finally` â€” which
  * discards the callback's return value. Returning it from `scenario` would
  * therefore always be `undefined`, and every assertion on an observed error
  * message would fail for the wrong reason.
@@ -80,6 +80,7 @@ async function scenario<T>(
 ): Promise<T | undefined> {
   let observed: T | undefined;
   let abortedByScenario = false;
+  let unexpected: unknown = null;
 
   try {
     await prisma.$transaction(
@@ -88,6 +89,7 @@ async function scenario<T>(
           observed = await body(tx as unknown as Transactionish);
         } catch (error) {
           abortedByScenario = true;
+          unexpected = error;
           throw error;
         } finally {
           // Discarded either way. A scenario that throws must not leave its
@@ -98,7 +100,20 @@ async function scenario<T>(
       { timeout: 60_000, maxWait: 10_000 },
     );
   } catch (error) {
-    if (!(error instanceof Rollback) && !abortedByScenario) {
+    if (error instanceof Rollback) {
+      // The body threw. That is the *expected* path for every `expectRejection`
+      // scenario and a silent no-op for everything else â€” and a silent no-op is
+      // how a broken rule hides behind a green run: the checks inside the body
+      // simply never execute, so a section can report nothing at all and the
+      // suite still passes. Surfacing it as a failure is what makes a green run
+      // mean something.
+      if (abortedByScenario && unexpected && !rejectionExpected) {
+        failed++;
+        failures.push(
+          "scenario threw before finishing :: " + (unexpected as Error).message,
+        );
+      }
+    } else if (!abortedByScenario) {
       // Reaching here means the transaction itself failed, not the scenario.
       failed++;
       failures.push("scenario aborted unexpectedly :: " + (error as Error).message);
@@ -119,6 +134,11 @@ async function expectRejection(
   // callable and would silence exactly the misuse this check exists to catch.
   kind: abstract new (...args: never[]) => Error,
 ): Promise<Error | null> {
+  // The scenario harness treats any escaping exception as a failure, because a
+  // body that dies early skips every check inside it. A rejection is the one
+  // case where throwing is the point, so it announces itself first.
+  rejectionExpected = true;
+
   try {
     await promise;
     failed++;
@@ -141,8 +161,18 @@ async function expectRejection(
         (error as Error).message,
     );
     return null;
+  } finally {
+    rejectionExpected = false;
   }
 }
+
+/**
+ * Set by `expectRejection` for the duration of the promise it is awaiting.
+ *
+ * Read by the scenario harness, which otherwise reports every escaping exception
+ * as a failure.
+ */
+let rejectionExpected = false;
 
 /** The header row the parser expects, without the template's example row. */
 function headerOf(template: string): string {
@@ -186,7 +216,33 @@ async function main() {
 
   const actor = { id: cashier.id, name: cashier.name };
 
-  // ── Checkout writes a complete, consistent sale ─────────────────────────
+  /**
+   * An open shift for the cashier, inside the caller's transaction.
+   *
+   * Cash sales are refused without one â€” that is the rule under test, not an
+   * obstacle to it â€” so every scenario that has to complete a cash sale opens a
+   * shift the way the POS does, and the scenarios that check the refusal itself
+   * deliberately omit it.
+   */
+  async function withOpenShift<T>(
+    tx: Transactionish,
+    body: (shiftId: string) => Promise<T>,
+  ): Promise<T> {
+    const shift = await tx.cashShift.create({
+      data: {
+        number: `TEST-SFT-${Math.random().toString(36).slice(2, 8)}`,
+        userId: cashier.id,
+        status: "OPEN",
+        openedAt: new Date(),
+        openingCash: 0,
+      },
+      select: { id: true },
+    });
+
+    return body(shift.id);
+  }
+
+  // â”€â”€ Checkout writes a complete, consistent sale â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   section("Checkout writes a complete, consistent sale");
 
   await scenario(async (tx) => {
@@ -195,14 +251,17 @@ async function main() {
       select: { stock: true },
     });
 
-    const result = await checkoutSale(
-      {
-        paymentMethod: "CASH",
-        amountPaid: 100_000,
-        lines: [{ productId: product.id, quantity: 2 }],
-      },
-      actor,
-      { client: tx },
+    const result = await withOpenShift(tx, (shiftId) =>
+      checkoutSale(
+        {
+          paymentMethod: "CASH",
+          amountPaid: 100_000,
+          shiftId,
+          lines: [{ productId: product.id, quantity: 2 }],
+        },
+        actor,
+        { client: tx },
+      ),
     );
 
     const sale = await tx.sale.findUniqueOrThrow({
@@ -285,7 +344,7 @@ async function main() {
     );
   });
 
-  // ── Refusals ────────────────────────────────────────────────────────────
+  // â”€â”€ Refusals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   section("Checkout refuses what it must not sell");
 
   {
@@ -349,12 +408,42 @@ async function main() {
 
   {
     const error = await scenario(async (tx) =>
+      withOpenShift(tx, (shiftId) =>
+        expectRejection(
+          "cash that does not cover the total is refused",
+          checkoutSale(
+            {
+              paymentMethod: "CASH",
+              amountPaid: 1,
+              shiftId,
+              lines: [{ productId: product.id, quantity: 1 }],
+            },
+            actor,
+            { client: tx },
+          ),
+          Error,
+        ),
+      ),
+    );
+
+    check(
+      "the underpayment message states the shortfall",
+      error?.message.includes("kurang") ?? false,
+      error?.message,
+    );
+  }
+
+  // â”€â”€ Cash accountability: a till that cannot be reconciled is refused â”€â”€â”€â”€â”€
+  section("Cash sales require an open shift the cashier actually owns");
+
+  {
+    const error = await scenario(async (tx) =>
       expectRejection(
-        "cash that does not cover the total is refused",
+        "a cash sale with no open shift is refused",
         checkoutSale(
           {
             paymentMethod: "CASH",
-            amountPaid: 1,
+            amountPaid: 1_000_000,
             lines: [{ productId: product.id, quantity: 1 }],
           },
           actor,
@@ -365,8 +454,81 @@ async function main() {
     );
 
     check(
-      "the underpayment message states the shortfall",
-      error?.message.includes("kurang") ?? false,
+      "the missing-shift refusal says to open one",
+      error?.message.includes("Buka shift") ?? false,
+      error?.message,
+    );
+  }
+
+  {
+    const error = await scenario(async (tx) =>
+      withOpenShift(tx, (shiftId) =>
+        expectRejection(
+          "a shift belonging to someone else is refused",
+          checkoutSale(
+            {
+              paymentMethod: "CASH",
+              amountPaid: 1_000_000,
+              shiftId,
+              lines: [{ productId: product.id, quantity: 1 }],
+            },
+            // A different cashier, holding a shift that is not theirs. The id is
+            // taken from the payload, so only a server-side ownership check
+            // stops the sale landing in someone else's till.
+            { id: second.id, name: "Kasir Lain" },
+            { client: tx },
+          ),
+          Error,
+        ),
+      ),
+    );
+
+    check(
+      "another cashier's shift is rejected",
+      error?.message.includes("Shift") ?? false,
+      error?.message,
+    );
+  }
+
+  {
+    // A non-cash sale never touches the drawer, so it must stay available when
+    // no shift is open â€” otherwise the store cannot sell at all before opening.
+    await scenario(async (tx) => {
+      await checkoutSale(
+        {
+          paymentMethod: "QRIS",
+          amountPaid: 0,
+          lines: [{ productId: product.id, quantity: 1 }],
+        },
+        actor,
+        { client: tx },
+      );
+    });
+
+    check("a non-cash sale needs no shift", true);
+  }
+
+  {
+    const error = await scenario(async (tx) =>
+      expectRejection(
+        "a manual discount from a cashier with no discount grant is refused",
+        checkoutSale(
+          {
+            paymentMethod: "QRIS",
+            amountPaid: 0,
+            manualDiscount: 5_000,
+            lines: [{ productId: product.id, quantity: 1 }],
+          },
+          actor,
+          { client: tx, canApplyDiscount: false },
+        ),
+        Error,
+      ),
+    );
+
+    check(
+      "the discount refusal names the missing permission",
+      error?.message.includes("diskon manual") ?? false,
       error?.message,
     );
   }
@@ -405,7 +567,7 @@ async function main() {
     });
   }
 
-  // ── Promotions ──────────────────────────────────────────────────────────
+  // â”€â”€ Promotions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   section("Promotions are valued by the server, not the client");
 
   {
@@ -432,17 +594,20 @@ async function main() {
       const subtotal = Number(product.sellingPrice) * 2;
       const expectedDiscount = Math.round(subtotal * 0.5);
 
-      const result = await checkoutSale(
-        {
-          paymentMethod: "CASH",
-          amountPaid: 1_000_000,
-          // Lowercase on purpose: the server must normalise, or the code would
-          // not match and the discount would silently not apply.
-          promotionCode: promoCode.toLowerCase(),
-          lines: [{ productId: product.id, quantity: 2 }],
-        },
-        actor,
-        { client: tx },
+      const result = await withOpenShift(tx, (shiftId) =>
+        checkoutSale(
+          {
+            paymentMethod: "CASH",
+            amountPaid: 1_000_000,
+            shiftId,
+            // Lowercase on purpose: the server must normalise, or the code would
+            // not match and the discount would silently not apply.
+            promotionCode: promoCode.toLowerCase(),
+            lines: [{ productId: product.id, quantity: 2 }],
+          },
+          actor,
+          { client: tx },
+        ),
       );
 
       equal("the promotion is applied", result.promotionCode, promoCode);
@@ -545,7 +710,7 @@ async function main() {
     );
   }
 
-  // ── Tax from settings ───────────────────────────────────────────────────
+  // â”€â”€ Tax from settings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   section("Tax comes from settings, never from the request");
 
   {
@@ -605,22 +770,25 @@ async function main() {
         update: { value: 0.1 },
       });
 
-      const sale = await checkoutSale(
-        {
-          paymentMethod: "CASH",
-          amountPaid: 1_000_000,
-          taxRate: 0.5,
-          lines: [{ productId: second.id, quantity: 1 }],
-        },
-        actor,
-        { client: tx },
+      const sale = await withOpenShift(tx, (shiftId) =>
+        checkoutSale(
+          {
+            paymentMethod: "CASH",
+            amountPaid: 1_000_000,
+            shiftId,
+            taxRate: 0.5,
+            lines: [{ productId: second.id, quantity: 1 }],
+          },
+          actor,
+          { client: tx },
+        ),
       );
 
       equal("tax is not charged when the store has disabled it", sale.tax, 0);
     });
   }
 
-  // ── Loyalty ─────────────────────────────────────────────────────────────
+  // â”€â”€ Loyalty â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   section("Loyalty points accrue on post-discount, pre-tax revenue");
 
   await scenario(async (tx) => {
@@ -629,15 +797,18 @@ async function main() {
       select: { points: true, totalPurchases: true },
     });
 
-    const result = await checkoutSale(
-      {
-        paymentMethod: "CASH",
-        amountPaid: 1_000_000,
-        customerId: member.id,
-        lines: [{ productId: second.id, quantity: 1 }],
-      },
-      actor,
-      { client: tx },
+    const result = await withOpenShift(tx, (shiftId) =>
+      checkoutSale(
+        {
+          paymentMethod: "CASH",
+          amountPaid: 1_000_000,
+          shiftId,
+          customerId: member.id,
+          lines: [{ productId: second.id, quantity: 1 }],
+        },
+        actor,
+        { client: tx },
+      ),
     );
 
     const ratioRow = await tx.storeSetting.findUnique({
@@ -667,7 +838,188 @@ async function main() {
     equal("the receipt names the customer", result.customerName, member.name);
   });
 
-  // ── Void ────────────────────────────────────────────────────────────────
+  // â”€â”€ Loyalty redemption â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  section("Points can be spent, and only against a real balance");
+
+  // Gives the section its own value so it does not depend on whatever the seeded
+// store happens to have configured. The member's balance is topped up inside
+  // each scenario rather than out here, so the whole section stays rolled back
+  // and leaves no fixture behind.
+  const POINT_VALUE = 100;
+  const REDEEMED_POINTS = 2;
+
+  await prisma.storeSetting.upsert({
+    where: { key: "loyalty.pointValue" },
+    update: { value: POINT_VALUE },
+    create: {
+      key: "loyalty.pointValue",
+      value: POINT_VALUE,
+      description: "Nilai tukar 1 poin saat penukaran (Rp)",
+    },
+  });
+
+  /** Gives the member a balance to draw on, inside the caller's transaction. */
+  async function fundMember(tx: Transactionish, points = 500) {
+    await tx.customer.update({
+      where: { id: member.id },
+      data: { points, isMember: true, isActive: true },
+    });
+  }
+
+  {
+    const error = await scenario(async (tx) => {
+      await fundMember(tx, REDEEMED_POINTS);
+
+      return expectRejection(
+        "redeeming more points than the member holds is refused",
+        checkoutSale(
+          {
+            customerId: member.id,
+            paymentMethod: "QRIS",
+            amountPaid: 0,
+            redeemPoints: REDEEMED_POINTS + 1,
+            lines: [{ productId: product.id, quantity: 1 }],
+          },
+          actor,
+          { client: tx },
+        ),
+        Error,
+      );
+    });
+
+    check(
+      "the overdraft refusal states the balance",
+      error?.message.includes("Poin tidak cukup") ?? false,
+      error?.message,
+    );
+  }
+
+  {
+    const error = await scenario((tx) =>
+      expectRejection(
+        "a non-member cannot redeem points",
+        checkoutSale(
+          {
+            paymentMethod: "QRIS",
+            amountPaid: 0,
+            redeemPoints: 10,
+            lines: [{ productId: product.id, quantity: 1 }],
+          },
+          actor,
+          { client: tx },
+        ),
+        Error,
+      ),
+    );
+
+    check(
+      "the redemption refusal names the membership requirement",
+      error?.message.includes("member") ?? false,
+      error?.message,
+    );
+  }
+
+  {
+    const unit = Number(product.sellingPrice);
+
+    const observed = await scenario(async (tx) => {
+      await fundMember(tx);
+
+      const result = await checkoutSale(
+        {
+          customerId: member.id,
+          paymentMethod: "QRIS",
+          amountPaid: 0,
+          redeemPoints: REDEEMED_POINTS,
+          lines: [{ productId: product.id, quantity: 1 }],
+        },
+        actor,
+        { client: tx },
+      );
+
+      const sale = await tx.sale.findUniqueOrThrow({
+        where: { id: result.saleId },
+        select: { discount: true, pointsRedeemed: true, total: true },
+      });
+
+      return { result, sale };
+    });
+
+    if (observed) {
+      // The redemption is taken before tax so the receipt
+      // still foots, and capped so it can never exceed what is owed.
+      equal(
+        "the redemption is priced from the setting",
+        observed.result.pointsDiscount,
+        REDEEMED_POINTS * POINT_VALUE,
+      );
+      equal("the total drops by the redeemed value", observed.result.total, unit - REDEEMED_POINTS * POINT_VALUE);
+      equal("the points spent are reported back", observed.result.pointsRedeemed, REDEEMED_POINTS);
+      equal("the sale records the points spent", observed.sale.pointsRedeemed, REDEEMED_POINTS);
+      equal(
+        "the discount column carries the redemption",
+        Number(observed.sale.discount),
+        REDEEMED_POINTS * POINT_VALUE,
+      );
+    } else {
+      check("the redemption scenario ran to completion", false);
+    }
+  }
+
+  {
+    // The mirror image: returning goods bought with points has to hand the points
+    // back, or the member ends up with both the goods' cash value and the points
+    // they paid for.
+    const observed = await scenario(async (tx) =>
+      withOpenShift(tx, async (shiftId) => {
+        await fundMember(tx);
+
+        const sale = await checkoutSale(
+          {
+            customerId: member.id,
+            paymentMethod: "CASH",
+            amountPaid: 1_000_000,
+            shiftId,
+            redeemPoints: REDEEMED_POINTS,
+            lines: [{ productId: product.id, quantity: 1 }],
+          },
+          actor,
+          { client: tx },
+        );
+
+        const item = await tx.saleItem.findFirstOrThrow({
+          where: { saleId: sale.saleId },
+          select: { id: true },
+        });
+
+        const { refundSale } = await import("../src/lib/sales/mutations");
+
+        await refundSale(
+          sale.saleId,
+          [{ saleItemId: item.id, quantity: 1, condition: "GOOD" }],
+          "Pengujian pembalikan poin",
+          actor.id,
+          { client: tx },
+        );
+
+        const after = await tx.sale.findUniqueOrThrow({
+          where: { id: sale.saleId },
+          select: { status: true, pointsRedeemed: true },
+        });
+
+        return after;
+      }),
+    );
+
+    check(
+      "a refunded sale is reconciled and still records its redemption",
+      observed?.status === "REFUNDED" &&
+        observed.pointsRedeemed === REDEEMED_POINTS,
+      JSON.stringify(observed),
+    );
+  }
+
+  // â”€â”€ Void â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   section("Voiding a sale puts the stock back");
 
   await scenario(async (tx) => {
@@ -676,14 +1028,17 @@ async function main() {
       select: { stock: true },
     });
 
-    const sale = await checkoutSale(
-      {
-        paymentMethod: "CASH",
-        amountPaid: 1_000_000,
-        lines: [{ productId: product.id, quantity: 3 }],
-      },
-      actor,
-      { client: tx },
+    const sale = await withOpenShift(tx, (shiftId) =>
+      checkoutSale(
+        {
+          paymentMethod: "CASH",
+          amountPaid: 1_000_000,
+          shiftId,
+          lines: [{ productId: product.id, quantity: 3 }],
+        },
+        actor,
+        { client: tx },
+      ),
     );
 
     const mid = await tx.product.findUniqueOrThrow({
@@ -720,38 +1075,55 @@ async function main() {
     equal("the restock is recorded as a void return", restock?.type, "SALE_VOID");
   });
 
-  // ── Refund ──────────────────────────────────────────────────────────────
+  // â”€â”€ Refund â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   section("Refunds restock good goods and never resell damaged ones");
 
   await scenario(async (tx) => {
-    const sale = await checkoutSale(
-      {
-        paymentMethod: "CASH",
-        amountPaid: 1_000_000,
-        lines: [{ productId: product.id, quantity: 4 }],
-      },
-      actor,
-      { client: tx },
+    // Two products in one sale, so the refund can split conditions across lines:
+    // a refund carries one row per sale line, and asking for the same line twice
+    // is rejected as a duplicate rather than silently merged.
+    const sale = await withOpenShift(tx, (shiftId) =>
+      checkoutSale(
+        {
+          paymentMethod: "CASH",
+          amountPaid: 1_000_000,
+          shiftId,
+          lines: [
+            { productId: product.id, quantity: 2 },
+            { productId: second.id, quantity: 2 },
+          ],
+        },
+        actor,
+        { client: tx },
+      ),
     );
 
-    const item = await tx.saleItem.findFirstOrThrow({
+    const items = await tx.saleItem.findMany({
       where: { saleId: sale.saleId },
-      select: { id: true },
+      select: { id: true, productId: true },
     });
 
-    const afterVoidStock = await tx.product.findUniqueOrThrow({
-      where: { id: product.id },
-      select: { stock: true },
-    });
+    const good = items.find((entry) => entry.productId === product.id)!;
+    const damaged = items.find((entry) => entry.productId === second.id)!;
+
+    const before = new Map(
+      (
+        await tx.product.findMany({
+          where: { id: { in: [product.id, second.id] } },
+          select: { id: true, stock: true },
+        })
+      ).map((row) => [row.id, row.stock]),
+    );
 
     const { refundSale } = await import("../src/lib/sales/mutations");
 
-    // Two good, one damaged: only the good ones may go back on the shelf.
+    // Two good from one line, two damaged from the other: only the good ones may
+    // go back on the shelf.
     const refund = await refundSale(
       sale.saleId,
       [
-        { saleItemId: item.id, quantity: 2, condition: "GOOD" },
-        { saleItemId: item.id, quantity: 1, condition: "DAMAGED" },
+        { saleItemId: good.id, quantity: 2, condition: "GOOD" },
+        { saleItemId: damaged.id, quantity: 1, condition: "DAMAGED" },
       ],
       "Barang rusak sebagian",
       actor.id,
@@ -769,7 +1141,7 @@ async function main() {
     equal(
       "stock reflects only the good returns",
       after.stock,
-      afterVoidStock.stock + 2,
+      (before.get(product.id) ?? 0) + 2,
     );
 
     const updated = await tx.sale.findUniqueOrThrow({
@@ -778,6 +1150,30 @@ async function main() {
     });
 
     equal("the sale is marked partially refunded", updated.status, "PARTIALLY_REFUNDED");
+
+    const damagedAfter = await tx.product.findUniqueOrThrow({
+      where: { id: second.id },
+      select: { stock: true },
+    });
+
+    // Damaged units left the shelf but must not re-enter sellable stock, so the
+    // counter is unchanged â€” and the shrink has to be on the ledger, or the
+    // disappearance is unexplained.
+    equal(
+      "damaged units never return to sellable stock",
+      damagedAfter.stock,
+      before.get(second.id) ?? 0,
+    );
+
+    const damageLedger = await tx.inventoryMovement.count({
+      where: {
+        productId: second.id,
+        type: "DAMAGED",
+        referenceType: "SaleRefund",
+      },
+    });
+
+    equal("the damaged write-off is recorded in the ledger", damageLedger > 0, true);
 
     check(
       "the refunded sale cannot be voided",
@@ -792,7 +1188,7 @@ async function main() {
     );
   });
 
-  // ── CSV import ──────────────────────────────────────────────────────────
+  // â”€â”€ CSV import â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   section("CSV import validates every row before writing any");
 
   {
@@ -908,7 +1304,7 @@ async function main() {
     });
   }
 
-  // ── CSV parsing ─────────────────────────────────────────────────────────
+  // â”€â”€ CSV parsing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   section("CSV parsing handles quoting");
 
   equal("a plain line splits on commas", splitCsvLine("a,b,c").length, 3);
@@ -917,7 +1313,7 @@ async function main() {
   equal("an empty line yields one empty field", splitCsvLine("").length, 1);
   equal("trailing spaces are trimmed", splitCsvLine("a , b").join("|"), "a|b");
 
-  // ── Notifications ───────────────────────────────────────────────────────
+  // â”€â”€ Notifications â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   section("Notifications deduplicate, then resolve");
 
   {
@@ -953,7 +1349,7 @@ async function main() {
     // Restored to the value it had, not to an arbitrary one. This edit happens
     // outside a transaction and without a ledger row, so anything other than an
     // exact restore would leave the product's stock permanently out of step with
-    // its own history — which the ledger suite would then correctly report.
+    // its own history â€” which the ledger suite would then correctly report.
     const originalStock = target.stock;
 
     try {
@@ -995,14 +1391,14 @@ async function main() {
     }
   }
 
-  // ── Nothing escaped ─────────────────────────────────────────────────────
+  // â”€â”€ Nothing escaped â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   section("No write escaped the rolled-back scenarios");
 
   {
     // Snapshot the counts this suite could plausibly touch and confirm none of
     // them moved. A mutation that writes through the global Prisma client inside
     // a scenario commits regardless of the caller's rollback, and that is
-    // invisible from inside the scenario itself — it looks like it passed while
+    // invisible from inside the scenario itself â€” it looks like it passed while
     // leaving rows behind for every later run.
     const leaked = await prisma.product.count({
       where: { OR: [{ sku: { startsWith: "IMP-" } }, { sku: { startsWith: "DBG" } }] },

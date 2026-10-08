@@ -93,8 +93,13 @@ export function PaymentDialog({
     }
   }
 
+  // Cash is the only method that touches the drawer, so it is the only one that
+  // needs an open shift to be reconciled against. Non-cash settlements never
+  // enter the till and must stay available even when the shift is not open.
   const canConfirm =
-    !isPending && total > 0 && (isCash ? isSufficient : hasOpenShift);
+    !isPending &&
+    total > 0 &&
+    (isCash ? isSufficient && hasOpenShift : true);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

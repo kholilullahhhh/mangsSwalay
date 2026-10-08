@@ -287,9 +287,13 @@ export interface BarcodeLookup {
 export async function findProductByBarcode(
   barcode: string,
 ): Promise<BarcodeLookup | null> {
-  const trimmed = barcode.trim();
+const trimmed = barcode.trim();
 
-  if (!/^[0-9]{8,14}$/.test(trimmed)) {
+  // Scanners emit digits, but Code 128 labels carry letters too, and a strict
+  // numeric filter here would silently reject a perfectly valid product at the
+  // till. What matters is an exact match, which the caller relies on — a partial
+  // one would put the wrong item in the basket.
+  if (trimmed.length < 4 || trimmed.length > 40) {
     return null;
   }
 

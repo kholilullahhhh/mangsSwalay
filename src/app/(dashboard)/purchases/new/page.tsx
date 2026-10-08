@@ -25,6 +25,21 @@ export default async function NewPurchasePage() {
     orderBy: { name: "asc" },
   });
 
+  // The order has to name products, not paste internal ids: a cuid in a free-text
+  // field is a transcription error waiting to happen, and an unresolvable one
+  // turns into a 500 rather than a "product not found" message.
+  const products = await prisma.product.findMany({
+    where: { isActive: true },
+    select: {
+      id: true,
+      sku: true,
+      name: true,
+      hasExpiry: true,
+      purchasePrice: true,
+    },
+    orderBy: { name: "asc" },
+  });
+
   return (
     <div className="space-y-4">
       <div>
@@ -43,7 +58,17 @@ export default async function NewPurchasePage() {
           membuat pesanan pembelian.
         </p>
       ) : (
-        <NewPurchaseButton suppliers={suppliers} defaultOpen />
+        <NewPurchaseButton
+          suppliers={suppliers}
+          products={products.map((product) => ({
+            id: product.id,
+            sku: product.sku,
+            name: product.name,
+            hasExpiry: product.hasExpiry,
+            purchasePrice: Number(product.purchasePrice),
+          }))}
+          defaultOpen
+        />
       )}
     </div>
   );

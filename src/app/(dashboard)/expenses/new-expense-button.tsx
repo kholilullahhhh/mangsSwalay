@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Loader2, Plus } from "lucide-react";
+import { Loader2, Plus, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,7 +24,19 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-import { createExpenseAction } from "../customers/actions";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+
+import { createExpenseAction, deleteExpenseAction } from "../customers/actions";
 
 export function NewExpenseButton({ categories }: { categories: Record<string, string> }) {
   const router = useRouter();
@@ -161,5 +173,77 @@ export function NewExpenseButton({ categories }: { categories: Record<string, st
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+/**
+ * Removes one expense.
+ *
+ * Expenses were effectively write-once: the server action existed and was
+ * permission-guarded, but no control rendered it, so a mistyped amount could
+ * neither be corrected nor removed — a manager had to find it in the database.
+ */
+export function DeleteExpenseButton({
+  expenseId,
+  description,
+}: {
+  expenseId: string;
+  description: string;
+}) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [isPending, startTransition] = useTransition();
+
+  return (
+    <AlertDialog open={open} onOpenChange={setOpen}>
+      <AlertDialogTrigger asChild>
+        <Button variant="ghost" size="icon" className="size-8" aria-label="Hapus pengeluaran">
+          <Trash2 className="size-4" aria-hidden />
+        </Button>
+      </AlertDialogTrigger>
+
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Hapus pengeluaran ini?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {description || "Pengeluaran"} akan dihapus dan tidak lagi mengurangi
+            laba pada laporan. Tindakan ini tidak bisa dibatalkan.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={isPending}>Batal</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={isPending}
+            onClick={(event) => {
+              event.preventDefault();
+
+              const formData = new FormData();
+              formData.set("id", expenseId);
+
+              startTransition(async () => {
+                const result = await deleteExpenseAction(formData);
+
+                if (result.error) {
+                  toast.error(result.error);
+                  return;
+                }
+
+                toast.success("Pengeluaran dihapus.");
+                setOpen(false);
+                router.refresh();
+              });
+            }}
+          >
+            {isPending ? (
+              <Loader2 className="size-4 animate-spin" aria-hidden />
+            ) : (
+              <Trash2 className="size-4" aria-hidden />
+            )}
+            Ya, hapus
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }

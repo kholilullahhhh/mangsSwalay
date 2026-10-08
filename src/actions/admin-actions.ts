@@ -228,6 +228,28 @@ function buildPromotionData(raw: ReturnType<typeof readPromotion>) {
     return { error: "Pilih minimal satu produk untuk promo produk terpilih." };
   }
 
+  // Every value-bearing type needs a real value. `Number("")` is 0, so an empty
+  // field used to persist a zero and then fail at the till as
+  // INVALID_CONFIGURATION — the exact outcome the checks above exist to prevent.
+  const value = readPromotionValue(raw.type, raw.value);
+
+  if (value <= 0) {
+    return {
+      error: "Nilai promo harus lebih dari nol.",
+      fieldErrors: { value: "Wajib diisi dan lebih dari nol." },
+    };
+  }
+
+  // Percentage fields are read as 0-100 here and divided by 100 at checkout.
+  const isPercent = raw.type === "PERCENTAGE" || raw.type === "MINIMUM_PURCHASE";
+
+  if (isPercent && value > 100) {
+    return {
+      error: "Nilai persen maksimal 100.",
+      fieldErrors: { value: "Maksimal 100." },
+    };
+  }
+
   const minPurchaseAmount = raw.minPurchaseAmount.trim()
     ? Number(raw.minPurchaseAmount)
     : null;
@@ -242,7 +264,7 @@ function buildPromotionData(raw: ReturnType<typeof readPromotion>) {
       name: raw.name,
       description: raw.description || null,
       type: raw.type as never,
-      value: readPromotionValue(raw.type, raw.value),
+      value,
       minPurchaseAmount,
       buyQuantity,
       getQuantity,
@@ -623,14 +645,19 @@ async function assertNotLastAdmin(
   userId: string,
   next: { role: string; isActive: boolean },
 ): Promise<void> {
-  if (next.role !== "SUPER_ADMIN" || !next.isActive) return;
-
   const current = await prisma.user.findUnique({
     where: { id: userId },
     select: { role: true, isActive: true },
   });
 
-  if (current?.role !== "SUPER_ADMIN") return;
+  // Only a currently-active super admin is worth counting.
+  if (!current?.isActive || current.role !== "SUPER_ADMIN") return;
+
+  // The check has to run whenever the target row would stop being one, so the
+  // decision is about the *before* state, not the proposed one. Testing the
+  // proposed state instead meant the deactivation path — which always proposes
+  // `isActive: false` — returned immediately and never guarded anything.
+  if (next.role === "SUPER_ADMIN" && next.isActive) return;
 
   const remaining = await prisma.user.count({
     where: {

@@ -52,13 +52,16 @@ export async function listCustomers(filters: CustomerFilters) {
     orderBy: { name: "asc" },
     skip: pageRequest.skip,
     take: pageRequest.take,
-    select: {
+select: {
       id: true,
       name: true,
       phone: true,
       email: true,
       memberNumber: true,
       isMember: true,
+      address: true,
+      notes: true,
+      isActive: true,
       points: true,
       totalPurchases: true,
       createdAt: true,

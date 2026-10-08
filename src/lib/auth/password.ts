@@ -12,8 +12,8 @@ import { hash } from "bcryptjs";
  */
 
 /** bcrypt work factor. Higher is slower to brute-force and slower to log in. */
-const COST = 12;
+export const BCRYPT_COST = 12;
 
 export async function hashPassword(plain: string): Promise<string> {
-  return hash(plain, COST);
+  return hash(plain, BCRYPT_COST);
 }

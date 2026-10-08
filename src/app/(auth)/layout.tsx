@@ -4,6 +4,8 @@ import { type Metadata } from "next";
 import { Lock, Store } from "lucide-react";
 
 import { getCurrentUser } from "@/lib/auth/session";
+import { ThemeToggle } from "@/components/theme-toggle";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 export const metadata: Metadata = {
   title: "Masuk",
@@ -27,6 +29,15 @@ export default async function AuthLayout({
 
   return (
     <div className="flex min-h-screen flex-col bg-muted/40">
+      {/* Same reason as the landing page: this is a pre-sign-in screen, so it
+          needs its own theme control rather than relying on the dashboard
+          topbar the user has not reached yet. */}
+      <div className="absolute end-4 top-4 z-10">
+        <TooltipProvider>
+          <ThemeToggle />
+        </TooltipProvider>
+      </div>
+
       <header className="flex items-center justify-center py-8">
         <Link
           href="/"

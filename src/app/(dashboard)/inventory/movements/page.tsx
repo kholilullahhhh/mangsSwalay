@@ -3,6 +3,7 @@ import Link from "next/link";
 import { FileClock } from "lucide-react";
 
 import { requirePagePermission } from "@/lib/auth/session";
+import { prisma } from "@/lib/db";
 import { listMovements, MOVEMENT_LABEL } from "@/lib/queries/inventory";
 import { formatDateTime, formatNumber } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
@@ -20,6 +21,7 @@ import {
   type PaginationMeta,
 } from "@/components/data/table-pagination";
 import { EmptyState } from "@/components/data/empty-state";
+import { MovementFilters } from "../movement-filters";
 
 export const metadata: Metadata = {
   title: "Pergerakan Stok",
@@ -40,7 +42,7 @@ export default async function MovementsPage({
 
   const params = await searchParams;
 
-  const { rows, total, pagination } = await listMovements({
+const { rows, total, pagination } = await listMovements({
     search: single(params.search),
     productId: single(params.productId),
     type: single(params.type),
@@ -51,11 +53,29 @@ export default async function MovementsPage({
     perPage: single(params.perPage),
   });
 
-  const serialised: Record<string, string> = {};
+  // Backs the product picker. Capped deliberately: this is a filter, not the
+  // catalogue, and a select of ten thousand options is unusable anyway.
+  const filterOptions = await prisma.product.findMany({
+    where: { isActive: true },
+    select: { id: true, name: true, sku: true },
+    orderBy: { name: "asc" },
+    take: 500,
+  });
+
+const serialised: Record<string, string> = {};
   for (const [key, value] of Object.entries(params)) {
     const one = Array.isArray(value) ? value[0] : value;
     if (one) serialised[key] = one;
   }
+
+  const filterState = {
+    search: single(params.search) ?? "",
+    productId: single(params.productId) ?? "",
+    type: single(params.type) ?? "",
+    dateFrom: single(params.dateFrom) ?? "",
+    dateTo: single(params.dateTo) ?? "",
+    direction: single(params.direction) ?? "",
+  };
 
   return (
     <div className="space-y-4">
@@ -69,6 +89,17 @@ export default async function MovementsPage({
       </div>
 
       <Card>
+        <MovementFilters
+          initial={filterState}
+          types={Object.entries(MOVEMENT_LABEL).map(([value, label]) => ({
+            value,
+            label,
+          }))}
+          products={filterOptions.map((product) => ({
+            id: product.id,
+            label: `${product.name} (${product.sku})`,
+          }))}
+        />
         {rows.length === 0 ? (
           <EmptyState
             icon={FileClock}
@@ -90,9 +121,15 @@ export default async function MovementsPage({
                 </TableRow>
               </TableHeader>
 
-              <TableBody>
+<TableBody>
                 {rows.map((row) => {
-                  const isIn = IN_TYPES.has(row.type);
+                  // Taken from the row's own arithmetic, not from its type.
+                  // `OPNAME` is genuinely bidirectional — an approval can add
+                  // stock as easily as remove it — so classifying it by name
+                  // rendered a surplus as a red "-5" directly beside the "10 → 15"
+                  // on the same row.
+                  const delta = row.newStock - row.previousStock;
+                  const isIn = delta > 0;
 
                   return (
                     <TableRow key={row.id}>
@@ -130,15 +167,17 @@ export default async function MovementsPage({
                         ) : null}
                       </TableCell>
 
-                      <TableCell
+<TableCell
                         className={
-                          isIn
-                            ? "tabular text-right font-medium text-stock-ok"
-                            : "tabular text-right font-medium text-stock-out"
+                          delta === 0
+                            ? "tabular text-right font-medium text-muted-foreground"
+                            : isIn
+                              ? "tabular text-right font-medium text-stock-ok"
+                              : "tabular text-right font-medium text-stock-out"
                         }
                       >
-                        {isIn ? "+" : "-"}
-                        {formatNumber(row.quantity)}
+                        {delta > 0 ? "+" : delta < 0 ? "-" : ""}
+                        {formatNumber(Math.abs(delta))}
                       </TableCell>
 
                       <TableCell className="tabular text-right text-muted-foreground">
@@ -169,14 +208,6 @@ export default async function MovementsPage({
     </div>
   );
 }
-
-const IN_TYPES = new Set([
-  "PURCHASE",
-  "RETURN_SALE",
-  "ADJUSTMENT_IN",
-  "TRANSFER_IN",
-  "SALE_VOID",
-]);
 
 function single(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) return value[0];

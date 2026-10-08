@@ -55,7 +55,10 @@ export function ShiftControls({
   const [openingCash, setOpeningCash] = useState("");
   const [actualCash, setActualCash] = useState("");
   const [amount, setAmount] = useState("");
-  const [reason, setReason] = useState("");
+const [reason, setReason] = useState("");
+  // Separate from `reason`: sharing the state let a half-typed cash-movement
+  // reason become the shift's closing note.
+  const [closeNotes, setCloseNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   function reset() {
@@ -64,6 +67,7 @@ export function ShiftControls({
     setActualCash("");
     setAmount("");
     setReason("");
+    setCloseNotes("");
   }
 
   if (!shift) {
@@ -167,12 +171,18 @@ export function ShiftControls({
           Kas Keluar
         </Button>
 
-        {canManage ? (
+{canManage ? (
           <Button
             size="sm"
             disabled={isPending}
             onClick={() => {
-              setActualCash(String(shift.expected));
+              // Deliberately blank, not pre-filled with the expected figure. The
+              // counted cash is the one control that makes the variance mean
+              // anything, and arriving pre-filled with the answer means a cashier
+              // can open the dialog and close the shift without counting
+              // anything — producing a perfect "Seimbang" that never happened.
+              setActualCash("");
+              setCloseNotes("");
               setCloseDialog(true);
             }}
           >
@@ -296,7 +306,7 @@ export function ShiftControls({
             </AlertDialogDescription>
           </AlertDialogHeader>
 
-          <div className="space-y-2">
+<div className="space-y-2">
             <Label htmlFor="actual-cash">Jumlah kas aktual (Rp)</Label>
             <Input
               id="actual-cash"
@@ -306,6 +316,10 @@ export function ShiftControls({
               value={actualCash}
               onChange={(event) => setActualCash(event.target.value)}
               className="tabular"
+              // Blank by design — see the button above. Required so the shift
+              // cannot be closed on an empty count, which would silently record
+              // the whole float as missing.
+              required
             />
 
             <Label htmlFor="close-notes" className="mt-3">
@@ -314,7 +328,10 @@ export function ShiftControls({
             <Input
               id="close-notes"
               placeholder="Opsional, tapi wajib bila ada selisih"
-              onChange={(event) => setReason(event.target.value)}
+              // Its own state, not the cash-movement `reason`: sharing it meant a
+              // half-typed movement reason could become the closing note.
+              value={closeNotes}
+              onChange={(event) => setCloseNotes(event.target.value)}
             />
 
             {error ? (
@@ -327,14 +344,14 @@ export function ShiftControls({
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isPending}>Batal</AlertDialogCancel>
             <AlertDialogAction
-              disabled={isPending}
+              disabled={isPending || actualCash.trim() === ""}
               onClick={(event) => {
                 event.preventDefault();
 
                 const formData = new FormData();
                 formData.set("shiftId", shift.id);
                 formData.set("actualCash", actualCash);
-                formData.set("notes", reason);
+                formData.set("notes", closeNotes);
 
                 startTransition(async () => {
                   const result = await closeShiftAction(formData);

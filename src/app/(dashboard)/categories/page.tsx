@@ -53,7 +53,10 @@ export default async function CategoriesPage() {
 
       </div>
 
-      <CategoryDialog />
+      {/* Gated: without it a role that may view categories but not manage them
+          gets a working "Tambah Kategori" button that only fails after the form
+          has been filled in. */}
+      {canManage ? <CategoryDialog /> : null}
 
       <Card>
         <CardContent className="px-0">

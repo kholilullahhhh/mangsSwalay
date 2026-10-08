@@ -121,6 +121,14 @@ export async function updateProductAction(
   }
 
   try {
+    // Archiving a product is a removal, not an edit. The edit dialog carries an
+    // `isActive` checkbox, and gating it on `products:update` alone meant a role
+    // that may edit but not delete could still take a product off the shelf
+    // through that checkbox — the exact thing `products:delete` exists to gate.
+    if (parsed.data.isActive === false) {
+      await requirePermission("products:delete");
+    }
+
     const before = await prisma_productForAudit(id);
     const product = await updateProduct(id, parsed.data as ProductData);
 

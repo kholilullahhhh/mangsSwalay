@@ -35,12 +35,10 @@ export function RangeFilter({
           size="sm"
           variant={active === preset.value ? "secondary" : "ghost"}
         >
-          <Link
-            href={
-              basePath +
-              (preset.value === "365d" ? "" : "?range=" + preset.value)
-            }
-          >
+{/* Every preset links with its own value. Sending the yearly range to the bare
+            page meant it landed on the default preset — a 30-day report wearing
+            a yearly label, which is quietly wrong rather than obviously broken. */}
+          <Link href={basePath + "?range=" + preset.value}>
             {preset.label}
           </Link>
         </Button>

@@ -26,7 +26,7 @@ export async function refreshNotificationsAction(): Promise<{
   if (result.created > 0 || result.resolved > 0) {
     await audit({
       userId: user.id,
-      action: "NOTIFICATION_DELETE",
+      action: "NOTIFICATION_REFRESH",
       entity: "Notification",
       newData: result,
     });

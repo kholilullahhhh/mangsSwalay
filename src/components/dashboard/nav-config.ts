@@ -217,7 +217,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Keuangan",
     items: [
       { title: "Pengeluaran", href: "/expenses", icon: "expense", permission: "expenses:view" },
-      { title: "Arus Kas", href: "/cashflow", icon: "cashflow", permission: "reports:sales" },
+      { title: "Arus Kas", href: "/cashflow", icon: "cashflow", permission: "reports:cashflow" },
     ],
   },
   {

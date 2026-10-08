@@ -16,7 +16,7 @@ import {
 import {
   deletePromotionAction,
   togglePromotionAction,
-} from "@/app/(dashboard)/admin/actions";
+} from "@/actions/admin-actions";
 import { PromotionDialog, type PromotionFormValues } from "./promotion-dialog";
 
 /**
