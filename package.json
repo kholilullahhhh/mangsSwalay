@@ -30,6 +30,7 @@
     "db:deploy": "prisma migrate deploy",
 "db:studio": "prisma studio",
     "db:seed": "tsx prisma/seed.ts",
+    "db:seed:sales": "tsx --tsconfig tsconfig.scripts.json prisma/seed-sales.ts",
     "db:prune-sessions": "tsx --tsconfig tsconfig.scripts.json scripts/prune-sessions.ts"
   },
   "dependencies": {

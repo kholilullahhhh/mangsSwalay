@@ -42,15 +42,27 @@ async function main() {
     select: { id: true, sku: true, stock: true, name: true },
   });
 
+  // Scoped to the seed's own opening movement, and to the first movement
+  // overall. What this asserts is where the stock came from — not how much is
+  // left today. Once the store has traded, `Product.stock` is legitimately lower
+  // than the opening balance and there are SALE rows after it, so the old
+  // "exactly one movement, ending at today's stock" form only held on a
+  // database nobody had ever sold anything on.
   const opening = await prisma.inventoryMovement.findMany({
-    where: { productId: product.id },
+    where: { productId: product.id, referenceType: "SEED" },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     select: { previousStock: true, newStock: true },
   });
 
+  const first = await prisma.inventoryMovement.findFirst({
+    where: { productId: product.id },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: { previousStock: true },
+  });
+
   equal("seeded product has one opening movement", opening.length, 1);
+  equal("opening movement is the product's first movement", first?.previousStock, 0);
   equal("opening movement starts from zero", opening[0].previousStock, 0);
-  equal("opening movement ends at seeded stock", opening[0].newStock, product.stock);
 
 // Chain integrity across every seeded product.
   const products = await prisma.product.findMany({
