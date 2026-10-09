@@ -364,13 +364,19 @@ function SidebarSeparator({
   )
 }
 
+/**
+ * Local change from stock shadcn: `no-scrollbar` hid the scrollbar entirely, so
+ * a long menu looked like it simply ended at the fold. `scrollbar-thin` keeps it
+ * scrollable but subtle, and `scroll-py-2` keeps the first/last item from
+ * sitting flush against the header and footer while scrolled.
+ */
 function SidebarContent({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="sidebar-content"
       data-sidebar="content"
       className={cn(
-        "no-scrollbar flex min-h-0 flex-1 flex-col gap-0 overflow-auto group-data-[collapsible=icon]:overflow-hidden",
+        "scrollbar-thin scroll-py-2 flex min-h-0 flex-1 flex-col gap-0 overflow-auto group-data-[collapsible=icon]:overflow-hidden",
         className
       )}
       {...props}
