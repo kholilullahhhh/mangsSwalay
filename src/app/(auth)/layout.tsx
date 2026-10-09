@@ -5,7 +5,6 @@ import { Lock, Store } from "lucide-react";
 
 import { getCurrentUser } from "@/lib/auth/session";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { TooltipProvider } from "@/components/ui/tooltip";
 
 export const metadata: Metadata = {
   title: "Masuk",
@@ -33,9 +32,7 @@ export default async function AuthLayout({
           needs its own theme control rather than relying on the dashboard
           topbar the user has not reached yet. */}
       <div className="absolute end-4 top-4 z-10">
-        <TooltipProvider>
-          <ThemeToggle />
-        </TooltipProvider>
+        <ThemeToggle />
       </div>
 
       <header className="flex items-center justify-center py-8">
@@ -55,7 +52,7 @@ export default async function AuthLayout({
       </main>
 
       <footer className="py-6 text-center">
-<p className="text-xs text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
             <Lock className="mr-1 inline size-3" aria-hidden />
             Akses hanya untuk staff terdaftar.
           </p>

@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -44,8 +45,14 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           enableSystem
           disableTransitionOnChange
         >
-          {children}
-          <Toaster position="top-center" richColors closeButton />
+          {/* Root-level so every route group can render a Tooltip. Previously only
+              the auth and dashboard layouts provided one, which left the landing
+              page — where ThemeToggle lives — throwing "Tooltip must be used
+              within TooltipProvider" and returning a 500. */}
+          <TooltipProvider>
+            {children}
+            <Toaster position="top-center" richColors closeButton />
+          </TooltipProvider>
         </ThemeProvider>
       </body>
     </html>

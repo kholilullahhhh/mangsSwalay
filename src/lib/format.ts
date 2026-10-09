@@ -58,21 +58,6 @@ const DF_TIME_ID = new Intl.DateTimeFormat("id-ID", {
   timeZone: STORE_TIME_ZONE,
 });
 
-const RTF_ID = new Intl.RelativeTimeFormat("id-ID", { numeric: "auto" });
-
-/** Zone-parts reader, shared by the store-day helpers below. */
-const DF_ZONE_PARTS = new Intl.DateTimeFormat("en-CA", {
-  timeZone: STORE_TIME_ZONE,
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  weekday: "short",
-  hour12: false,
-});
-
 /**
  * Formats a Rupiah amount, e.g. `Rp 68.000`.
  *

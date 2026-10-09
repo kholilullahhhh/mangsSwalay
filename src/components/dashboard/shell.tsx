@@ -19,7 +19,6 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { Store } from "lucide-react";
-import { TooltipProvider } from "@/components/ui/tooltip";
 
 import { isNavItemActive, NAV_ICONS, type NavGroup } from "./nav-config";
 import { DashboardTopbar } from "./topbar";
@@ -40,8 +39,9 @@ export interface DashboardShellProps {
 /**
  * Application shell: collapsible sidebar + sticky topbar + content area.
  *
- * Wrapped in TooltipProvider so sidebar tooltips work; sidebar and topbar are
- * client components, while page content below stays a Server Component tree.
+ * Sidebar and topbar are client components, while page content below stays a
+ * Server Component tree. Tooltip context comes from the root layout, which
+ * provides it for every route group.
  */
 export function DashboardShell({
   user,
@@ -52,22 +52,20 @@ export function DashboardShell({
 }: DashboardShellProps) {
   return (
     <SidebarProvider>
-      <TooltipProvider>
-        <AppSidebar
-          navGroups={navGroups}
+      <AppSidebar
+        navGroups={navGroups}
+        user={user}
+        unreadCount={unreadCount}
+        hasOpenShift={Boolean(openShift)}
+      />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <DashboardTopbar
           user={user}
           unreadCount={unreadCount}
-          hasOpenShift={Boolean(openShift)}
+          openShift={openShift}
         />
-        <div className="flex min-w-0 flex-1 flex-col">
-          <DashboardTopbar
-            user={user}
-            unreadCount={unreadCount}
-            openShift={openShift}
-          />
-          <main className="flex-1 p-4 md:p-6">{children}</main>
-        </div>
-      </TooltipProvider>
+        <main className="flex-1 p-4 md:p-6">{children}</main>
+      </div>
     </SidebarProvider>
   );
 }

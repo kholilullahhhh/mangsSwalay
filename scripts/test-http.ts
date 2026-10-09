@@ -8,6 +8,11 @@
  * component expects.
  *
  * Usage: npx tsx scripts/test-http.ts [baseUrl]
+ *
+ * The base URL defaults to `$BASE_URL`, then `http://localhost:3100`. Hardcoding
+ * the port in the npm script meant `npm run test:all` always reported
+ * "fetch failed" unless the developer happened to be serving on exactly 3100,
+ * which read as a failing suite rather than a missing server.
  */
 
 import "dotenv/config";
@@ -15,7 +20,10 @@ import { SignJWT } from "jose";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../src/generated/prisma/client";
 
-const BASE = process.argv[2] ?? "http://localhost:3100";
+const BASE = (process.argv[2] ?? process.env.BASE_URL ?? "http://localhost:3100").replace(
+  /\/$/,
+  "",
+);
 
 const prisma = new PrismaClient({
   adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }),
@@ -40,6 +48,16 @@ function section(title: string) {
   console.log(`\n${title}`);
 }
 
+/**
+ * Every user this run minted a session for.
+ *
+ * Cleanup cannot be inline: a `fetch` rejection or an unexpected throw part-way
+ * through `main()` skipped the per-block `deleteMany` calls entirely and left
+ * expired rows behind, which `test:db` then reported as leaked fixtures. This
+ * set is drained in a `finally` so the database is restored whatever happens.
+ */
+const mintedForUsers = new Set<string>();
+
 /** Signs a session cookie exactly the way src/lib/auth/session.ts does. */
 async function mintSessionCookie(userId: string): Promise<string> {
   const token = crypto.randomUUID() + crypto.randomUUID();
@@ -52,6 +70,8 @@ async function mintSessionCookie(userId: string): Promise<string> {
   const tokenHash = Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+
+  mintedForUsers.add(userId);
 
   await prisma.session.create({
     data: {
@@ -474,8 +494,7 @@ async function main() {
       `got ${posAsCashier.status}`,
     );
 
-    // Clean up the throwaway sessions.
-    await prisma.session.deleteMany({ where: { userId: cashier.id } });
+    // Cleaned up by the `finally` in `run()`.
   }
 
   // ── CSRF / method checks ─────────────────────────────────────────────────
@@ -659,8 +678,6 @@ async function main() {
       reportsAsCashier.status === 403,
       `got ${reportsAsCashier.status}`,
     );
-
-    await prisma.session.deleteMany({ where: { userId: cashier.id } });
   }
 
   {
@@ -689,12 +706,7 @@ async function main() {
       "stock operator is refused user management",
       (await asOperator("/users")).status === 403,
     );
-
-    await prisma.session.deleteMany({ where: { userId: operator.id } });
   }
-
-  // ── Clean up ─────────────────────────────────────────────────────────────
-  await prisma.session.deleteMany({ where: { userId: admin.id } });
 
   console.log(`\n${"─".repeat(60)}`);
   if (failures.length > 0) {
@@ -706,7 +718,27 @@ async function main() {
   console.log("─".repeat(60));
 }
 
-main()
+/**
+ * Removes every session this run created, whatever the outcome.
+ *
+ * The previous inline `deleteMany` calls only ran on the happy path, so a thrown
+ * error left unexpired-then-expired rows in the table and broke the fixture
+ * hygiene check in `test:db`. `main` is wrapped so the cleanup happens on both
+ * the success and the failure path.
+ */
+async function run(): Promise<void> {
+  try {
+    await main();
+  } finally {
+    if (mintedForUsers.size > 0) {
+      await prisma.session.deleteMany({
+        where: { userId: { in: [...mintedForUsers] } },
+      });
+    }
+  }
+}
+
+run()
   .then(async () => {
     await prisma.$disconnect();
     if (failed > 0) process.exit(1);

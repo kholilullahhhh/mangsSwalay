@@ -577,11 +577,11 @@ export function PosTerminal({
           whole cart and the payment button sat below ~120 product tiles. The
           `minmax` floor stops the catalogue collapsing to ~240px at 1280px once
           the 256px sidebar is subtracted, which is the width a small laptop has. */}
-      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)] xl:grid-cols-[minmax(320px,1fr)_380px_320px]">
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(300px,360px)] xl:grid-cols-[minmax(0,1fr)_360px_300px]">
         {/* ── Catalogue ────────────────────────────────────────────────── */}
         <section aria-label="Katalog produk" className="space-y-3">
-          <div className="flex flex-wrap gap-2">
-            <div className="relative min-w-52 flex-1">
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+            <div className="relative min-w-0 flex-1 sm:min-w-52">
               <Search
                 className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
                 aria-hidden
@@ -597,7 +597,7 @@ export function PosTerminal({
             </div>
 
             <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-              <SelectTrigger className="w-44" aria-label="Filter kategori">
+              <SelectTrigger className="w-full sm:w-44" aria-label="Filter kategori">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -623,29 +623,29 @@ export function PosTerminal({
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
               {visibleProducts.map((product) => (
                 <button
                   key={product.id}
                   type="button"
                   onClick={() => addProduct(product)}
                   disabled={product.stock <= 0}
-                  className="flex flex-col justify-between gap-2 rounded-lg border bg-card p-3 text-left transition-colors hover:border-brand-500 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="flex min-w-0 flex-col justify-between gap-1.5 rounded-lg border bg-card p-2.5 text-left transition-colors hover:border-brand-500 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:p-3 sm:gap-2"
                 >
                   <div className="min-w-0">
-                    <p className="line-clamp-2 text-sm font-medium leading-snug">
+                    <p className="line-clamp-2 break-words text-xs font-medium leading-snug sm:text-sm">
                       {product.name}
                     </p>
-                    <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">
+                    <p className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">
                       {product.sku}
                     </p>
                   </div>
 
-                  <div>
-                    <p className="tabular text-sm font-semibold">
+                  <div className="min-w-0">
+                    <p className="tabular text-xs font-semibold sm:text-sm">
                       {formatCurrency(product.sellingPrice)}
                     </p>
-                    <p className="text-[11px] text-muted-foreground">
+                    <p className="text-[10px] text-muted-foreground sm:text-[11px]">
                       {product.stock > 0
                         ? `Stok ${product.stock}`
                         : "Stok habis"}
@@ -666,14 +666,14 @@ export function PosTerminal({
           className="flex flex-col rounded-lg border bg-card lg:sticky lg:top-16 lg:max-h-[calc(100svh-5rem)] lg:overflow-hidden"
         >
           <header className="flex items-center justify-between gap-2 border-b px-4 py-3">
-            <div>
+            <div className="min-w-0">
               <h2 className="text-sm font-semibold">Keranjang</h2>
               <p className="text-xs text-muted-foreground">
                 {totals.itemCount} item · {totals.totalQuantity} pcs
               </p>
             </div>
 
-            <div className="flex gap-1">
+            <div className="flex shrink-0 gap-1">
               <Button
                 variant="ghost"
                 size="icon"
@@ -698,7 +698,7 @@ export function PosTerminal({
           </header>
 
           <div className="lg:flex-1 lg:overflow-y-auto">
-              <div className="max-h-[28rem] lg:max-h-none">
+              <div className="max-h-[28rem] lg:max-h-none overflow-y-auto">
             {lines.length === 0 ? (
               <p className="px-4 py-12 text-center text-sm text-muted-foreground">
                 Keranjang kosong. Scan barcode atau pilih produk.
