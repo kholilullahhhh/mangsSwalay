@@ -452,6 +452,327 @@ async function main() {
   }
   console.log(`  ✓ ${settings.length} store settings`);
 
+  // ── Purchases ─────────────────────────────────────────────────────────────
+  const purchaseCount = await prisma.purchase.count();
+  if (purchaseCount === 0) {
+    const purchaseSeeds = [
+      {
+        number: "PO-20260901-0001",
+        supplierId: suppliers["SUP-001"].id,
+        date: new Date("2026-09-01T08:00:00Z"),
+        status: "COMPLETED" as const,
+        subtotal: 1250000,
+        discount: 25000,
+        tax: 135000,
+        shippingCost: 50000,
+        grandTotal: 1410000,
+        amountPaid: 1410000,
+        paymentStatus: "PAID" as const,
+        notes: "Restock bulanan September",
+        receivedAt: new Date("2026-09-02T10:00:00Z"),
+        userId: users.gudang.id,
+        items: [
+          { productId: products["SMB-001"].id, quantity: 20, purchasePrice: 62000, subtotal: 1240000 },
+          { productId: products["SMB-002"].id, quantity: 50, purchasePrice: 14500, subtotal: 725000 },
+        ],
+      },
+      {
+        number: "PO-20260915-0001",
+        supplierId: suppliers["SUP-002"].id,
+        date: new Date("2026-09-15T09:00:00Z"),
+        status: "RECEIVED" as const,
+        subtotal: 850000,
+        discount: 0,
+        tax: 93500,
+        shippingCost: 0,
+        grandTotal: 943500,
+        amountPaid: 500000,
+        paymentStatus: "PARTIAL" as const,
+        notes: "Restock minuman",
+        receivedAt: new Date("2026-09-16T11:00:00Z"),
+        userId: users.gudang.id,
+        items: [
+          { productId: products["MNM-001"].id, quantity: 100, purchasePrice: 2500, subtotal: 250000 },
+          { productId: products["MNM-002"].id, quantity: 50, purchasePrice: 3500, subtotal: 175000 },
+          { productId: products["MNM-003"].id, quantity: 30, purchasePrice: 5500, subtotal: 165000 },
+        ],
+      },
+      {
+        number: "PO-20261001-0001",
+        supplierId: suppliers["SUP-003"].id,
+        date: new Date("2026-10-01T07:30:00Z"),
+        status: "ORDERED" as const,
+        subtotal: 450000,
+        discount: 0,
+        tax: 49500,
+        shippingCost: 25000,
+        grandTotal: 524500,
+        amountPaid: 0,
+        paymentStatus: "UNPAID" as const,
+        notes: "Order snack dan biskuit",
+        userId: users.gudang.id,
+        items: [
+          { productId: products["SNK-001"].id, quantity: 30, purchasePrice: 9000, subtotal: 270000 },
+          { productId: products["SNK-002"].id, quantity: 20, purchasePrice: 7000, subtotal: 140000 },
+        ],
+      },
+    ];
+
+    for (const p of purchaseSeeds) {
+      await prisma.purchase.create({
+        data: {
+          number: p.number,
+          supplierId: p.supplierId,
+          date: p.date,
+          status: p.status,
+          subtotal: p.subtotal,
+          discount: p.discount,
+          tax: p.tax,
+          shippingCost: p.shippingCost,
+          grandTotal: p.grandTotal,
+          amountPaid: p.amountPaid,
+          paymentStatus: p.paymentStatus,
+          notes: p.notes,
+          receivedAt: p.receivedAt,
+          userId: p.userId,
+          items: {
+            create: p.items,
+          },
+        },
+      });
+    }
+    console.log(`  ✓ ${purchaseSeeds.length} purchases`);
+  }
+
+  // ── Sales ─────────────────────────────────────────────────────────────────
+  const saleCount = await prisma.sale.count();
+  if (saleCount === 0) {
+    const saleSeeds = [
+      {
+        invoiceNumber: "INV-20260901-0001",
+        userId: users.kasir.id,
+        date: new Date("2026-09-01T09:30:00Z"),
+        subtotal: 45000,
+        discount: 0,
+        tax: 0,
+        total: 45000,
+        paymentMethod: "CASH" as const,
+        amountPaid: 50000,
+        change: 5000,
+        status: "COMPLETED" as const,
+        pointsEarned: 4,
+        pointsRedeemed: 0,
+        items: [
+          { productId: products["MKN-001"].id, quantity: 5, price: 3500, cost: 2800, subtotal: 17500 },
+          { productId: products["MNM-001"].id, quantity: 4, price: 3500, cost: 2500, subtotal: 14000 },
+          { productId: products["SNK-001"].id, quantity: 1, price: 11000, cost: 9000, subtotal: 11000 },
+        ],
+      },
+      {
+        invoiceNumber: "INV-20260901-0002",
+        userId: users.kasir.id,
+        date: new Date("2026-09-01T10:15:00Z"),
+        subtotal: 78000,
+        discount: 5000,
+        tax: 0,
+        total: 73000,
+        paymentMethod: "QRIS" as const,
+        amountPaid: 73000,
+        change: 0,
+        status: "COMPLETED" as const,
+        pointsEarned: 7,
+        pointsRedeemed: 0,
+        promotionCode: "PROMO-QRIS-5",
+        items: [
+          { productId: products["SMB-001"].id, quantity: 1, price: 68000, cost: 62000, subtotal: 68000 },
+          { productId: products["SMB-002"].id, quantity: 2, price: 16500, cost: 14500, subtotal: 33000 },
+        ],
+      },
+      {
+        invoiceNumber: "INV-20260902-0001",
+        userId: users.kasir.id,
+        date: new Date("2026-09-02T14:00:00Z"),
+        subtotal: 125000,
+        discount: 0,
+        tax: 0,
+        total: 125000,
+        paymentMethod: "CASH" as const,
+        amountPaid: 150000,
+        change: 25000,
+        status: "COMPLETED" as const,
+        pointsEarned: 12,
+        pointsRedeemed: 0,
+        items: [
+          { productId: products["SMB-001"].id, quantity: 2, price: 68000, cost: 62000, subtotal: 136000 },
+          { productId: products["SMB-003"].id, quantity: 3, price: 19500, cost: 17500, subtotal: 58500 },
+        ],
+      },
+      {
+        invoiceNumber: "INV-20260903-0001",
+        userId: users.kasir.id,
+        date: new Date("2026-09-03T11:30:00Z"),
+        subtotal: 32000,
+        discount: 0,
+        tax: 0,
+        total: 32000,
+        paymentMethod: "DEBIT" as const,
+        amountPaid: 32000,
+        change: 0,
+        status: "COMPLETED" as const,
+        pointsEarned: 3,
+        pointsRedeemed: 0,
+        items: [
+          { productId: products["KBR-001"].id, quantity: 1, price: 22500, cost: 19000, subtotal: 22500 },
+          { productId: products["PDR-001"].id, quantity: 1, price: 13500, cost: 11000, subtotal: 13500 },
+        ],
+      },
+      {
+        invoiceNumber: "INV-20260905-0001",
+        userId: users.kasir.id,
+        date: new Date("2026-09-05T16:45:00Z"),
+        subtotal: 95000,
+        discount: 10000,
+        tax: 0,
+        total: 85000,
+        paymentMethod: "CASH" as const,
+        amountPaid: 100000,
+        change: 15000,
+        status: "COMPLETED" as const,
+        pointsEarned: 8,
+        pointsRedeemed: 0,
+        promotionCode: "PROMO-MEMBER-10K",
+        items: [
+          { productId: products["MKN-001"].id, quantity: 10, price: 3500, cost: 2800, subtotal: 35000 },
+          { productId: products["MNM-001"].id, quantity: 10, price: 3500, cost: 2500, subtotal: 35000 },
+          { productId: products["SNK-003"].id, quantity: 2, price: 16500, cost: 14000, subtotal: 33000 },
+        ],
+      },
+    ];
+
+    for (const s of saleSeeds) {
+      await prisma.sale.create({
+        data: {
+          invoiceNumber: s.invoiceNumber,
+          userId: s.userId,
+          date: s.date,
+          subtotal: s.subtotal,
+          discount: s.discount,
+          tax: s.tax,
+          total: s.total,
+          paymentMethod: s.paymentMethod,
+          amountPaid: s.amountPaid,
+          change: s.change,
+          status: s.status,
+          pointsEarned: s.pointsEarned,
+          pointsRedeemed: s.pointsRedeemed,
+          promotionCode: s.promotionCode,
+          items: {
+            create: s.items,
+          },
+        },
+      });
+    }
+    console.log(`  ✓ ${saleSeeds.length} sales`);
+  }
+
+  // ── Cash Shifts ───────────────────────────────────────────────────────────
+  const shiftCount = await prisma.cashShift.count();
+  if (shiftCount === 0) {
+    const shiftSeeds = [
+      {
+        number: "SFT-20260901-0001",
+        userId: users.kasir.id,
+        status: "CLOSED" as const,
+        openedAt: new Date("2026-09-01T07:00:00Z"),
+        closedAt: new Date("2026-09-01T21:00:00Z"),
+        openingCash: 200000,
+        closingCash: 1250000,
+        expectedCash: 1245000,
+        variance: 5000,
+        notes: "Shift pertama September",
+      },
+      {
+        number: "SFT-20260902-0001",
+        userId: users.kasir.id,
+        status: "CLOSED" as const,
+        openedAt: new Date("2026-09-02T07:00:00Z"),
+        closedAt: new Date("2026-09-02T21:00:00Z"),
+        openingCash: 200000,
+        closingCash: 980000,
+        expectedCash: 975000,
+        variance: 5000,
+        notes: "Shift kedua September",
+      },
+      {
+        number: "SFT-20260903-0001",
+        userId: users.kasir.id,
+        status: "CLOSED" as const,
+        openedAt: new Date("2026-09-03T07:00:00Z"),
+        closedAt: new Date("2026-09-03T21:00:00Z"),
+        openingCash: 200000,
+        closingCash: 1100000,
+        expectedCash: 1095000,
+        variance: 5000,
+        notes: "Shift ketiga September",
+      },
+    ];
+
+    for (const sh of shiftSeeds) {
+      await prisma.cashShift.create({
+        data: sh,
+      });
+    }
+    console.log(`  ✓ ${shiftSeeds.length} cash shifts`);
+  }
+
+  // ── Expenses ──────────────────────────────────────────────────────────────
+  const expenseCount = await prisma.expense.count();
+  if (expenseCount === 0) {
+    const expenseSeeds = [
+      { category: "ELECTRICITY" as const, amount: 350000, description: "Listrik bulan September", date: new Date("2026-09-05T10:00:00Z"), userId: users.admin.id },
+      { category: "INTERNET" as const, amount: 250000, description: "Internet & WiFi", date: new Date("2026-09-05T10:00:00Z"), userId: users.admin.id },
+      { category: "RENT" as const, amount: 1500000, description: "Sewa ruko bulan September", date: new Date("2026-09-01T10:00:00Z"), userId: users.admin.id },
+      { category: "SALARY" as const, amount: 3500000, description: "Gaji karyawan September", date: new Date("2026-09-28T10:00:00Z"), userId: users.admin.id },
+      { category: "TRANSPORTATION" as const, amount: 75000, description: "Ongkos antar barang", date: new Date("2026-09-10T10:00:00Z"), userId: users.gudang.id },
+      { category: "MAINTENANCE" as const, amount: 150000, description: "Perbaikan AC", date: new Date("2026-09-15T10:00:00Z"), userId: users.admin.id },
+      { category: "OPERATIONAL" as const, amount: 50000, description: "ATK dan perlengkapan", date: new Date("2026-09-20T10:00:00Z"), userId: users.admin.id },
+    ];
+
+    for (const e of expenseSeeds) {
+      await prisma.expense.create({
+        data: e,
+      });
+    }
+    console.log(`  ✓ ${expenseSeeds.length} expenses`);
+  }
+
+  // ── Stock Opname ──────────────────────────────────────────────────────────
+  const opnameCount = await prisma.stockOpname.count();
+  if (opnameCount === 0) {
+    const opname = await prisma.stockOpname.create({
+      data: {
+        number: "OPN-20260915-0001",
+        name: "Opname pertengahan September",
+        status: "APPROVED" as const,
+        notes: "Opname rutin pertengahan bulan",
+        startedAt: new Date("2026-09-15T09:00:00Z"),
+        finishedAt: new Date("2026-09-15T12:00:00Z"),
+        approvedAt: new Date("2026-09-15T13:00:00Z"),
+        userId: users.gudang.id,
+        approvedById: users.manager.id,
+        items: {
+          create: [
+            { productId: products["MKN-001"].id, systemStock: 640, physicalStock: 635, difference: -5, valueDiff: -14000 },
+            { productId: products["MNM-001"].id, systemStock: 480, physicalStock: 480, difference: 0, valueDiff: 0 },
+            { productId: products["SNK-001"].id, systemStock: 180, physicalStock: 178, difference: -2, valueDiff: -18000 },
+            { productId: products["SMB-001"].id, systemStock: 120, physicalStock: 120, difference: 0, valueDiff: 0 },
+          ],
+        },
+      },
+    });
+    console.log(`  ✓ 1 stock opname (${opname.number})`);
+  }
+
   // ── Summary ──────────────────────────────────────────────────────────────
   console.log("\n✅ Seed complete.\n");
   console.log("─".repeat(58));

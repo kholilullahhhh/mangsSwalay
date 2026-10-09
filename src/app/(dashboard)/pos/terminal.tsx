@@ -577,7 +577,7 @@ export function PosTerminal({
           whole cart and the payment button sat below ~120 product tiles. The
           `minmax` floor stops the catalogue collapsing to ~240px at 1280px once
           the 256px sidebar is subtracted, which is the width a small laptop has. */}
-      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(300px,360px)] xl:grid-cols-[minmax(0,1fr)_360px_300px]">
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(300px,340px)] xl:grid-cols-[minmax(0,1fr)_340px_280px]">
         {/* ── Catalogue ────────────────────────────────────────────────── */}
         <section aria-label="Katalog produk" className="space-y-3">
           <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
@@ -623,7 +623,7 @@ export function PosTerminal({
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
               {visibleProducts.map((product) => (
                 <button
                   key={product.id}
